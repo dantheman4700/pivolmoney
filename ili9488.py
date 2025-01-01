@@ -265,3 +265,62 @@ class ILI9488:
             remaining_pixels -= chunk_pixels
             
         self.cs.value(1) 
+        
+    def draw_char(self, char, x, y, color, bg_color=None, scale=1):
+        """Draw a single character at position x,y with given color and optional background"""
+        if not 0 <= ord(char) < 128:  # Only ASCII characters
+            return
+            
+        # Get the character pattern from font8x8
+        char_pattern = font8x8[ord(char)]
+        
+        # Calculate dimensions
+        width = 8 * scale
+        height = 8 * scale
+        
+        # Set drawing window
+        self._write_cmd(0x2A)  # Column address set
+        self._write_data(bytearray([x >> 8, x & 0xFF, (x + width - 1) >> 8, (x + width - 1) & 0xFF]))
+        
+        self._write_cmd(0x2B)  # Row address set
+        self._write_data(bytearray([y >> 8, y & 0xFF, (y + height - 1) >> 8, (y + height - 1) & 0xFF]))
+        
+        self._write_cmd(0x2C)  # Memory write
+        self.cs.value(0)
+        self.dc.value(1)
+        
+        # Prepare color bytes
+        fg_color = bytearray(color)  # Foreground color
+        bg_color = bytearray(bg_color if bg_color else [0, 0, 0])  # Background color
+        
+        # Draw character pixel by pixel with scaling
+        for row in range(8):
+            pattern = char_pattern[row]
+            # Repeat each row 'scale' times
+            for sy in range(scale):
+                for col in range(8):
+                    pixel_color = fg_color if pattern & (1 << (7-col)) else bg_color
+                    # Repeat each pixel 'scale' times
+                    for sx in range(scale):
+                        self.spi.write(pixel_color)
+        
+        self.cs.value(1)
+        
+    def draw_text(self, text, x, y, color, bg_color=None, scale=1):
+        """Draw text string at position x,y with given color and optional background"""
+        char_width = 8 * scale  # Width of each character with scaling
+        char_spacing = 1 * scale  # Space between characters
+        
+        cursor_x = x
+        for char in text:
+            if char == '\n':  # Handle newline
+                cursor_x = x
+                y += (8 * scale) + char_spacing
+                continue
+                
+            if cursor_x + char_width > self.width:  # Handle text wrapping
+                cursor_x = x
+                y += (8 * scale) + char_spacing
+                
+            self.draw_char(char, cursor_x, y, color, bg_color, scale)
+            cursor_x += char_width + char_spacing 
