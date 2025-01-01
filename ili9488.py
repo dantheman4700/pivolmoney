@@ -27,9 +27,13 @@ class ILI9488:
         self.width = width
         self.height = height
         
-        self.dc.init(Pin.OUT, value=0)
-        self.cs.init(Pin.OUT, value=1)
-        self.rst.init(Pin.OUT, value=1)
+        # Initialize pins (no need to reinitialize as they're already set up)
+        # Just store the references
+        self.dc = dc
+        self.cs = cs
+        self.rst = rst
+        
+        # No need to reinitialize SPI as it's already set up
         
         self.reset()
         self.init()
@@ -43,131 +47,145 @@ class ILI9488:
         print("Reset complete")
         
     def init(self):
-        print("Starting minimal display initialization...")
+        print("Starting display initialization...")
         
         # Hardware reset
         self.rst.value(0)
         time.sleep_ms(100)
         self.rst.value(1)
         time.sleep_ms(100)
-        print("Reset complete")
         
         # Basic initialization
-        self._write_cmd(0x01)    # Software reset
+        self._write_cmd(_SWRESET)    # Software reset
         time.sleep_ms(100)
         
-        self._write_cmd(0x11)    # Sleep out
+        self._write_cmd(_SLPOUT)     # Sleep out
         time.sleep_ms(100)
         
-        # Power Control A
-        self._write_cmd(0xCB)
-        self._write_data(bytearray([0x39, 0x2C, 0x00, 0x34, 0x02]))
-        
-        # Power Control B
-        self._write_cmd(0xCF)
-        self._write_data(bytearray([0x00, 0xC1, 0x30]))
-        
-        # Driver timing control A
-        self._write_cmd(0xE8)
-        self._write_data(bytearray([0x85, 0x00, 0x78]))
-        
-        # Driver timing control B
-        self._write_cmd(0xEA)
-        self._write_data(bytearray([0x00, 0x00]))
-        
-        # Power on sequence control
-        self._write_cmd(0xED)
-        self._write_data(bytearray([0x64, 0x03, 0x12, 0x81]))
-        
-        # Pump ratio control
-        self._write_cmd(0xF7)
-        self._write_data(bytearray([0x20]))
-        
-        # Power Control,VRH[5:0]
-        self._write_cmd(0xC0)
-        self._write_data(bytearray([0x23]))
-        
-        # Power Control,SAP[2:0];BT[3:0]
-        self._write_cmd(0xC1)
-        self._write_data(bytearray([0x10]))
-        
-        # VCM Control
-        self._write_cmd(0xC5)
-        self._write_data(bytearray([0x3E, 0x28]))
-        
+        # Gamma settings
+        self._write_cmd(0xE0)    # Positive Gamma Control
+        self._write_data(bytearray([0x00, 0x03, 0x09, 0x08, 0x16, 0x0A, 0x3F, 0x78,
+                                  0x4C, 0x09, 0x0A, 0x08, 0x16, 0x1A, 0x0F]))
+
+        self._write_cmd(0xE1)    # Negative Gamma Control
+        self._write_data(bytearray([0x00, 0x16, 0x19, 0x03, 0x0F, 0x05, 0x32, 0x45,
+                                  0x46, 0x04, 0x0E, 0x0D, 0x35, 0x37, 0x0F]))
+
+        self._write_cmd(0xC0)    # Power Control 1
+        self._write_data(bytearray([0x17, 0x15]))
+
+        self._write_cmd(0xC1)    # Power Control 2
+        self._write_data(bytearray([0x41]))
+
+        self._write_cmd(0xC5)    # VCOM Control
+        self._write_data(bytearray([0x00, 0x12, 0x80]))
+
         # Memory Access Control
-        self._write_cmd(0x36)
-        self._write_data(bytearray([0x48]))
-        
-        # Pixel Format
-        self._write_cmd(0x3A)
-        self._write_data(bytearray([0x55]))
-        
+        self._write_cmd(_MADCTL)
+        self._write_data(bytearray([0xE8]))  # MY=1, MX=1, MV=1, BGR=1
+
+        # Interface Pixel Format
+        self._write_cmd(_PIXFMT)
+        self._write_data(bytearray([0x66]))  # 18-bit color format
+
         # Frame Rate Control
         self._write_cmd(0xB1)
         self._write_data(bytearray([0x00, 0x18]))
-        
-        self._write_cmd(0xB6)    # Display Function Control
-        self._write_data(bytearray([0x08, 0x82, 0x27]))
-        
-        self._write_cmd(0xF2)    # 3Gamma Function Disable
+
+        # Display Function Control
+        self._write_cmd(0xB6)
+        self._write_data(bytearray([0x02, 0x02]))
+
+        # Interface Control
+        self._write_cmd(0xF6)
+        self._write_data(bytearray([0x01, 0x30, 0x00]))
+
+        # Enable 3G
+        self._write_cmd(0xF2)
         self._write_data(bytearray([0x00]))
-        
-        self._write_cmd(0x26)    # Gamma curve selected
+
+        # Gamma Set
+        self._write_cmd(0x26)
         self._write_data(bytearray([0x01]))
-        
-        # Set Gamma
-        self._write_cmd(0xE0)
-        self._write_data(bytearray([0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1,
-                                  0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00]))
-        
-        # Set Gamma
-        self._write_cmd(0xE1)
-        self._write_data(bytearray([0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1,
-                                  0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F]))
-        
-        self._write_cmd(0x29)    # Display on
+
+        # Display ON
+        self._write_cmd(_DISPON)
         time.sleep_ms(100)
         
-        print("Basic initialization complete")
+        print("Display initialization complete")
         
     def fill(self, color):
         """Fill the entire screen with a color"""
         print(f"Attempting to fill with color: 0x{color:04X}")
         
+        # Convert 16-bit RGB565 to 18-bit RGB666
+        r = ((color >> 11) & 0x1F) << 1  # 5 bits to 6 bits
+        g = ((color >> 5) & 0x3F)        # 6 bits to 6 bits
+        b = (color & 0x1F) << 1          # 5 bits to 6 bits
+        
+        # Fill the entire screen using fill_rect
+        self.fill_rect(0, 0, self.width, self.height, [r, g, b])
+        
+    def fill_rect(self, x, y, w, h, color):
+        """Fill a rectangle area with a color"""
+        # Ensure coordinates are within bounds
+        x = max(0, min(self.width - 1, x))
+        y = max(0, min(self.height - 1, y))
+        w = min(w, self.width - x)
+        h = min(h, self.height - y)
+        
         # Set column address
         self._write_cmd(0x2A)
-        self._write_data(bytearray([0x00, 0x00, 0x01, 0xDF]))  # 0 to 479
+        self._write_data(bytearray([x >> 8, x & 0xFF, (x + w - 1) >> 8, (x + w - 1) & 0xFF]))
         
         # Set row address
         self._write_cmd(0x2B)
-        self._write_data(bytearray([0x00, 0x00, 0x01, 0x3F]))  # 0 to 319
+        self._write_data(bytearray([y >> 8, y & 0xFF, (y + h - 1) >> 8, (y + h - 1) & 0xFF]))
         
         # Write to RAM
         self._write_cmd(0x2C)
         
-        # Prepare color bytes
-        color_hi = color >> 8
-        color_lo = color & 0xFF
+        # If color is a list, it's RGB values for 18-bit color
+        if isinstance(color, list):
+            r, g, b = color
+            color_bytes = bytearray([r, g, b])
+        else:
+            # Convert 16-bit color to 18-bit
+            r = ((color >> 11) & 0x1F) << 1
+            g = ((color >> 5) & 0x3F)
+            b = (color & 0x1F) << 1
+            color_bytes = bytearray([r, g, b])
         
-        # Create a buffer for one row of pixels
-        buf_size = self.width * 2  # One full row
-        row_buffer = bytearray(buf_size)
-        for i in range(0, buf_size, 2):
-            row_buffer[i] = color_hi
-            row_buffer[i + 1] = color_lo
+        # Create a larger buffer (about full screen width)
+        pixels_per_write = min(w * h, self.width * 2)  # Use larger chunks
+        buffer = bytearray(pixels_per_write * 3)  # 3 bytes per pixel
         
-        # Write row by row
+        # Fill buffer with color pattern - optimize by copying in chunks
+        chunk = bytearray([color_bytes[0], color_bytes[1], color_bytes[2]] * 16)  # Create a small chunk
+        chunk_size = len(chunk)
+        
+        # Fill the buffer by copying the chunk repeatedly
+        for i in range(0, len(buffer), chunk_size):
+            remaining = len(buffer) - i
+            if remaining >= chunk_size:
+                buffer[i:i + chunk_size] = chunk
+            else:
+                buffer[i:i + remaining] = chunk[:remaining]
+        
+        # Fill rectangle
         self.cs.value(0)
         self.dc.value(1)
         
-        for row in range(self.height):
-            self.spi.write(row_buffer)
-            if row % 32 == 0:  # Print progress every 32 rows
-                print(f"Writing row {row}")
+        # Write in larger chunks
+        total_pixels = w * h
+        remaining_pixels = total_pixels
+        
+        while remaining_pixels > 0:
+            write_pixels = min(pixels_per_write, remaining_pixels)
+            self.spi.write(buffer[:write_pixels * 3])
+            remaining_pixels -= write_pixels
         
         self.cs.value(1)
-        print("Fill complete")
         
     def _set_window(self, x0, y0, x1, y1):
         """Set the active window for drawing"""
@@ -206,73 +224,27 @@ class ILI9488:
             x += 8 
         
     def _write_cmd(self, cmd):
-        """Write command with debug"""
-        print(f"Writing command: 0x{cmd:02X}")
+        """Write command"""
         self.cs.value(0)
         self.dc.value(0)
         self.spi.write(bytearray([cmd]))
         self.cs.value(1)
-        time.sleep_ms(1)  # Small delay between commands
         
     def _write_data(self, data):
-        """Write data with debug"""
-        print(f"Writing data: {[hex(x) for x in data]}")
+        """Write data"""
         self.cs.value(0)
         self.dc.value(1)
         self.spi.write(data)
         self.cs.value(1)
-        time.sleep_ms(1)  # Small delay between data
-        
-    def fill_rect(self, x, y, w, h, color):
-        """Fill a rectangle area with a color"""
-        # Ensure coordinates are within bounds
-        x = max(0, min(self.width - 1, x))
-        y = max(0, min(self.height - 1, y))
-        w = min(w, self.width - x)
-        h = min(h, self.height - y)
-        
-        # Set window
-        self._write_cmd(_CASET)
-        self._write_data(bytearray([x >> 8, x & 0xFF, (x + w - 1) >> 8, (x + w - 1) & 0xFF]))
-        
-        self._write_cmd(_PASET)
-        self._write_data(bytearray([y >> 8, y & 0xFF, (y + h - 1) >> 8, (y + h - 1) & 0xFF]))
-        
-        # Write to RAM
-        self._write_cmd(_RAMWR)
-        
-        # Prepare color bytes
-        color_hi = color >> 8
-        color_lo = color & 0xFF
-        
-        # Create small buffer
-        buf_size = min(32, w * 2)  # 2 bytes per pixel
-        color_buf = bytearray(buf_size)
-        for i in range(0, buf_size, 2):
-            color_buf[i] = color_hi
-            color_buf[i + 1] = color_lo
-            
-        # Write data
-        self.cs.value(0)
-        self.dc.value(1)
-        
-        # Fill rectangle
-        remaining_pixels = w * h
-        while remaining_pixels > 0:
-            chunk_pixels = min(buf_size // 2, remaining_pixels)
-            chunk_bytes = chunk_pixels * 2
-            self.spi.write(color_buf[:chunk_bytes])
-            remaining_pixels -= chunk_pixels
-            
-        self.cs.value(1) 
         
     def draw_char(self, char, x, y, color, bg_color=None, scale=1):
         """Draw a single character at position x,y with given color and optional background"""
-        if not 0 <= ord(char) < 128:  # Only ASCII characters
+        char_code = ord(char)
+        if char_code not in font8x8:  # Check if character is in our font
             return
             
         # Get the character pattern from font8x8
-        char_pattern = font8x8[ord(char)]
+        char_pattern = font8x8[char_code]
         
         # Calculate dimensions
         width = 8 * scale
@@ -289,25 +261,25 @@ class ILI9488:
         self.cs.value(0)
         self.dc.value(1)
         
-        # Prepare color bytes
-        fg_color = bytearray(color)  # Foreground color
-        bg_color = bytearray(bg_color if bg_color else [0, 0, 0])  # Background color
-        
         # Draw character pixel by pixel with scaling
         for row in range(8):
             pattern = char_pattern[row]
             # Repeat each row 'scale' times
             for sy in range(scale):
                 for col in range(8):
-                    pixel_color = fg_color if pattern & (1 << (7-col)) else bg_color
+                    pixel_color = color if pattern & (1 << (7-col)) else (bg_color if bg_color else bytearray([0, 0]))
                     # Repeat each pixel 'scale' times
                     for sx in range(scale):
                         self.spi.write(pixel_color)
         
         self.cs.value(1)
         
-    def draw_text(self, text, x, y, color, bg_color=None, scale=1):
+    def draw_text(self, x, y, text, color, bg_color=None, scale=1):
         """Draw text string at position x,y with given color and optional background"""
+        # Convert colors to bytes
+        color_bytes = bytearray([color >> 8, color & 0xFF])
+        bg_bytes = bytearray([bg_color >> 8, bg_color & 0xFF]) if bg_color is not None else None
+        
         char_width = 8 * scale  # Width of each character with scaling
         char_spacing = 1 * scale  # Space between characters
         
@@ -322,5 +294,73 @@ class ILI9488:
                 cursor_x = x
                 y += (8 * scale) + char_spacing
                 
-            self.draw_char(char, cursor_x, y, color, bg_color, scale)
-            cursor_x += char_width + char_spacing 
+            self.draw_char(char, cursor_x, y, color_bytes, bg_bytes, scale)
+            cursor_x += char_width + char_spacing
+            
+    def draw_rectangle(self, x, y, width, height, color, filled=False):
+        """Draw a rectangle at (x,y) with given width, height and color"""
+        if filled:
+            for i in range(height):
+                self.draw_hline(x, y + i, width, color)
+        else:
+            self.draw_hline(x, y, width, color)  # Top
+            self.draw_hline(x, y + height - 1, width, color)  # Bottom
+            self.draw_vline(x, y, height, color)  # Left
+            self.draw_vline(x + width - 1, y, height, color)  # Right
+
+    def draw_button(self, x, y, width, height, text, text_color, button_color, border_color=None):
+        """Draw a button with text centered in it"""
+        # Draw button background
+        self.draw_rectangle(x, y, width, height, button_color, filled=True)
+        
+        # Draw border if specified
+        if border_color is not None:
+            self.draw_rectangle(x, y, width, height, border_color)
+        
+        # Center text in button
+        text_width = len(text) * 8  # Assuming 8x8 font
+        text_x = x + (width - text_width) // 2
+        text_y = y + (height - 8) // 2  # Assuming 8x8 font
+        self.draw_text(text_x, text_y, text, text_color, button_color)
+
+    def draw_progress_bar(self, x, y, width, height, percentage, bar_color, background_color=None, border_color=None):
+        """Draw a progress bar with given percentage (0-100)"""
+        # Draw background if specified
+        if background_color is not None:
+            self.draw_rectangle(x, y, width, height, background_color, filled=True)
+        
+        # Draw border if specified
+        if border_color is not None:
+            self.draw_rectangle(x, y, width, height, border_color)
+        
+        # Calculate bar width based on percentage
+        bar_width = int((width - 2) * percentage / 100)
+        if bar_width > 0:
+            self.draw_rectangle(x + 1, y + 1, bar_width, height - 2, bar_color, filled=True)
+
+    def draw_list_item(self, x, y, width, height, text, text_color, background_color, selected=False):
+        """Draw a list item with optional selection highlight"""
+        # Draw background
+        self.draw_rectangle(x, y, width, height, background_color, filled=True)
+        
+        # Draw selection indicator if selected
+        if selected:
+            self.draw_rectangle(x, y, width, height, text_color)
+            # Draw small arrow or marker
+            self.draw_rectangle(x + 2, y + height//2 - 2, 4, 4, text_color, filled=True)
+        
+        # Draw text with padding
+        if hasattr(self, 'draw_text'):
+            self.draw_text(x + 8, y + (height - 8)//2, text, text_color)
+
+    def clear_rect(self, x, y, width, height):
+        """Clear a rectangular area (fill with black)"""
+        self.draw_rectangle(x, y, width, height, 0x0000, filled=True) 
+
+    def draw_hline(self, x, y, width, color):
+        """Draw a horizontal line"""
+        self.fill_rect(x, y, width, 1, color)
+        
+    def draw_vline(self, x, y, height, color):
+        """Draw a vertical line"""
+        self.fill_rect(x, y, 1, height, color) 
