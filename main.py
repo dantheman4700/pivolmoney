@@ -1,5 +1,6 @@
-from machine import Pin, SPI
+from machine import Pin, SPI, PWM
 import time
+from rotary import RotaryEncoder
 
 print("Starting display test...")
 
@@ -12,16 +13,30 @@ RST_PIN = 21    # Pin 4 on LCD
 CS_PIN = 17     # Pin 3 on LCD
 LED_PIN = 22    # Pin 8 on LCD
 
-# Initialize pins
+# Rotary Encoder Pins
+ROT_CLK = 14
+ROT_DT = 15
+ROT_SW = 13
+
+# Initialize display pins
 sck = Pin(SPI_SCK, Pin.OUT)
 mosi = Pin(SPI_MOSI, Pin.OUT)
 miso = Pin(SPI_MISO, Pin.IN)
 dc = Pin(DC_PIN, Pin.OUT)
 rst = Pin(RST_PIN, Pin.OUT)
 cs = Pin(CS_PIN, Pin.OUT)
-led = Pin(LED_PIN, Pin.OUT)
-led.value(1)  # Turn on backlight
 
+# Initialize LED backlight with PWM
+led_pwm = PWM(Pin(LED_PIN))
+led_pwm.freq(1000)  # Set PWM frequency to 1kHz
+brightness = 65535  # Max brightness (16-bit PWM)
+led_pwm.duty_u16(brightness)
+
+# Initialize rotary encoder
+encoder = RotaryEncoder(ROT_CLK, ROT_DT, ROT_SW)
+display_on = True
+
+# Display command functions
 def write_cmd(cmd):
     cs.value(0)
     dc.value(0)  # Command mode
@@ -163,5 +178,24 @@ for y in range(320 // 2, 320, square_size):
 
 print("Test pattern complete")
 
+# Main loop
+print("Starting main loop...")
 while True:
-    time.sleep(1) 
+    # Read encoder
+    value_changed, button_pressed = encoder.read()
+    
+    # Handle button press
+    if button_pressed:
+        display_on = not display_on
+        if display_on:
+            led_pwm.duty_u16(encoder.get_value())
+        else:
+            led_pwm.duty_u16(0)
+    
+    # Handle rotation
+    if value_changed and display_on:
+        brightness = encoder.get_value()
+        led_pwm.duty_u16(brightness)
+        print(f"Brightness: {brightness}")
+    
+    time.sleep_ms(1)  # Small delay to prevent busy waiting 
