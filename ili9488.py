@@ -250,6 +250,27 @@ class ILI9488:
         width = 8 * scale
         height = 8 * scale
         
+        # Convert colors to 18-bit format
+        if isinstance(color, list):
+            color_bytes = bytearray(color)
+        else:
+            # Convert 16-bit color to 18-bit
+            r = ((color >> 11) & 0x1F) << 1
+            g = ((color >> 5) & 0x3F)
+            b = (color & 0x1F) << 1
+            color_bytes = bytearray([r, g, b])
+            
+        if bg_color is not None:
+            if isinstance(bg_color, list):
+                bg_bytes = bytearray(bg_color)
+            else:
+                r = ((bg_color >> 11) & 0x1F) << 1
+                g = ((bg_color >> 5) & 0x3F)
+                b = (bg_color & 0x1F) << 1
+                bg_bytes = bytearray([r, g, b])
+        else:
+            bg_bytes = bytearray([0, 0, 0])  # Black background
+        
         # Set drawing window
         self._write_cmd(0x2A)  # Column address set
         self._write_data(bytearray([x >> 8, x & 0xFF, (x + width - 1) >> 8, (x + width - 1) & 0xFF]))
@@ -258,44 +279,51 @@ class ILI9488:
         self._write_data(bytearray([y >> 8, y & 0xFF, (y + height - 1) >> 8, (y + height - 1) & 0xFF]))
         
         self._write_cmd(0x2C)  # Memory write
+        
+        # Create buffer for one row of scaled pixels
+        buffer = bytearray(width * 3)  # 3 bytes per pixel
+        
+        # Draw character pixel by pixel with scaling
         self.cs.value(0)
         self.dc.value(1)
         
-        # Draw character pixel by pixel with scaling
         for row in range(8):
             pattern = char_pattern[row]
-            # Repeat each row 'scale' times
+            
+            # Fill buffer for one row
+            for col in range(8):
+                pixel_on = pattern & (1 << (7-col))
+                pixel_bytes = color_bytes if pixel_on else bg_bytes
+                
+                # Scale horizontally by duplicating pixels
+                for sx in range(scale):
+                    idx = (col * scale + sx) * 3
+                    buffer[idx:idx+3] = pixel_bytes
+            
+            # Repeat the row scale times
             for sy in range(scale):
-                for col in range(8):
-                    pixel_color = color if pattern & (1 << (7-col)) else (bg_color if bg_color else bytearray([0, 0]))
-                    # Repeat each pixel 'scale' times
-                    for sx in range(scale):
-                        self.spi.write(pixel_color)
+                self.spi.write(buffer)
         
         self.cs.value(1)
         
     def draw_text(self, x, y, text, color, bg_color=None, scale=1):
         """Draw text string at position x,y with given color and optional background"""
-        # Convert colors to bytes
-        color_bytes = bytearray([color >> 8, color & 0xFF])
-        bg_bytes = bytearray([bg_color >> 8, bg_color & 0xFF]) if bg_color is not None else None
-        
-        char_width = 8 * scale  # Width of each character with scaling
-        char_spacing = 1 * scale  # Space between characters
-        
         cursor_x = x
+        cursor_y = y
+        char_spacing = scale  # Space between characters
+        
         for char in text:
             if char == '\n':  # Handle newline
                 cursor_x = x
-                y += (8 * scale) + char_spacing
+                cursor_y += 8 * scale + char_spacing
                 continue
                 
-            if cursor_x + char_width > self.width:  # Handle text wrapping
+            if cursor_x + 8 * scale > self.width:  # Handle text wrapping
                 cursor_x = x
-                y += (8 * scale) + char_spacing
-                
-            self.draw_char(char, cursor_x, y, color_bytes, bg_bytes, scale)
-            cursor_x += char_width + char_spacing
+                cursor_y += 8 * scale + char_spacing
+            
+            self.draw_char(char, cursor_x, cursor_y, color, bg_color, scale)
+            cursor_x += 8 * scale + char_spacing
             
     def draw_rectangle(self, x, y, width, height, color, filled=False):
         """Draw a rectangle at (x,y) with given width, height and color"""

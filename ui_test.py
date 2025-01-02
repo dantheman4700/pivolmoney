@@ -1,8 +1,13 @@
-from machine import Pin, SPI
+from machine import Pin, SPI, I2C, PWM
 from ili9488 import ILI9488
+from ft6236 import FT6236
+from rotary import RotaryEncoder
 import time
 
-print("Initializing display...")
+print("Initializing display and touch...")
+
+# Initialize display
+print("Starting UI test...")
 
 # Display Pins
 SPI_SCK = 18    # Pin 7 on LCD
@@ -11,6 +16,13 @@ SPI_MISO = 16   # Pin 9 on LCD
 DC_PIN = 20     # Pin 5 on LCD
 RST_PIN = 21    # Pin 4 on LCD
 CS_PIN = 17     # Pin 3 on LCD
+LED_PIN = 22    # Pin 8 on LCD
+
+# Initialize LED backlight with PWM
+led_pwm = PWM(Pin(LED_PIN))
+led_pwm.freq(1000)  # Set PWM frequency to 1kHz
+brightness = 65535  # Max brightness (16-bit PWM)
+led_pwm.duty_u16(brightness)
 
 # Initialize display pins
 sck = Pin(SPI_SCK, Pin.OUT)
@@ -22,18 +34,21 @@ cs = Pin(CS_PIN, Pin.OUT)
 
 # Complete reset sequence
 print("Performing complete reset sequence...")
-cs.value(1)  # CS high
-dc.value(0)  # DC low
-rst.value(1)  # RST high
-time.sleep_ms(50)
-rst.value(0)  # RST low
-time.sleep_ms(150)
-rst.value(1)  # RST high
-time.sleep_ms(150)
 
-# Initialize SPI exactly as in main.py
+# Rotary Encoder Pins
+ROT_CLK = 14
+ROT_DT = 15
+ROT_SW = 13
+
+# Screen dimensions
+SCREEN_WIDTH = 480
+SCREEN_HEIGHT = 320
+LEFT_PANEL_WIDTH = 160  # Width of app list panel
+RIGHT_PANEL_WIDTH = SCREEN_WIDTH - LEFT_PANEL_WIDTH
+
+# Initialize SPI
 spi = SPI(0,
-          baudrate=62500000,   # Increase to 62.5MHz for fastest possible fills
+          baudrate=62500000,   # Back to 62.5MHz for faster drawing
           polarity=0,
           phase=0,
           bits=8,
@@ -44,42 +59,314 @@ spi = SPI(0,
 
 display = ILI9488(spi, dc=dc, cs=cs, rst=rst)
 
-# Define some colors (RGB565 format)
+# Touch controller pins
+TOUCH_SDA = 4   # GP4
+TOUCH_SCL = 5   # GP5
+TOUCH_INT = 6   # GP6
+TOUCH_RST = 7   # GP7
+
+# Initialize RST and INT pins
+rst_pin = Pin(TOUCH_RST, Pin.OUT)
+int_pin = Pin(TOUCH_INT, Pin.IN)
+
+# Reset touch controller
+print("Resetting touch controller...")
+rst_pin.value(0)  # Reset active low
+time.sleep_ms(10)
+rst_pin.value(1)
+time.sleep_ms(300)  # Wait for touch controller to initialize
+
+# Initialize I2C
+print("Initializing I2C...")
+i2c = I2C(0, sda=Pin(TOUCH_SDA), scl=Pin(TOUCH_SCL), freq=100000)
+
+# Initialize touch controller
+touch = FT6236(i2c, TOUCH_SDA, TOUCH_SCL)
+
+# Define colors (RGB565 format)
 BLACK = 0x0000
 WHITE = 0xFFFF
-RED = 0xF800
 GREEN = 0x07E0
-BLUE = 0x001F
+GRAY = 0x7BEF
+DARK_GRAY = 0x39E7
 
-print("Starting display test...")
+# App list parameters
+ICON_SIZE = 60  # Size of each app icon
+ICON_SPACING = 10  # Space between icons
+GRID_COLS = 2  # Number of columns
+GRID_ROWS = 3  # Number of visible rows
 
-# Clear to black first and wait for it to complete
-print("Filling screen with black")
+print("Starting UI test...")
+
+# Clear screen
+print("Clearing screen...")
 display.fill(BLACK)
-time.sleep_ms(100)  # Wait for fill to complete
 
-# Now create a simpler test pattern that's more readable
-display.fill(BLACK)
-time.sleep_ms(50)
+# Draw panel divider
+print("Drawing panel divider...")
+display.draw_vline(LEFT_PANEL_WIDTH, 0, SCREEN_HEIGHT, WHITE)
 
-# Draw a border
-display.draw_rectangle(5, 5, 470, 310, WHITE, filled=False)
+# Sample apps for testing (including blank apps)
+apps = [
+    "Master",  # Add Master as first app
+    "Spotify",
+    "Chrome",
+    "Discord",
+    "Game",
+    "Teams",
+    "Firefox",
+    "App 7",
+    "App 8",
+    "App 9",
+    "App 10",
+    "App 11",
+    "App 12",
+    "App 13",
+    "App 14",
+    "App 15"
+]
 
-# Title with large scale
-display.draw_text(20, 20, "Volume Control", WHITE, scale=3)
+# Scrolling variables
+current_page = 0    # Current page number
+is_dragging = False
+drag_start_x = 0
+SWIPE_THRESHOLD = 50  # Minimum pixels to trigger page change
 
-# Draw some example volume bars
-apps = ["Chrome", "Spotify", "Discord", "Game"]
-y = 80
-for i, app in enumerate(apps):
+# Initialize touch handling variables
+last_touch_time = 0
+TOUCH_DEBOUNCE_MS = 100  # 100ms debounce
+
+# Initialize UI state variables
+current_page = 0
+is_dragging = False
+drag_start_x = 0
+selected_app = 0
+last_x = 0
+last_y = 0
+
+# Draw app list (left panel)
+def draw_app_list(selected_index=0):
+    # Clear left panel
+    display.fill_rect(0, 0, LEFT_PANEL_WIDTH, SCREEN_HEIGHT, BLACK)
+    
+    # Calculate grid layout
+    usable_width = LEFT_PANEL_WIDTH - (GRID_COLS + 1) * ICON_SPACING
+    usable_height = SCREEN_HEIGHT - (GRID_ROWS + 1) * ICON_SPACING - 20  # Leave space for page number
+    icon_width = usable_width // GRID_COLS
+    icon_height = usable_height // GRID_ROWS
+    ICON_SIZE = min(icon_width, icon_height)  # Keep icons square
+    
+    # Calculate starting positions to center the grid
+    start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
+    start_y = (SCREEN_HEIGHT - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING) - 20) // 2
+    
+    # Calculate page info
+    items_per_page = GRID_COLS * GRID_ROWS
+    total_pages = (len(apps) + items_per_page - 1) // items_per_page
+    start_index = current_page * items_per_page
+    
+    # Draw apps for current page
+    for i in range(items_per_page):
+        app_index = start_index + i
+        if app_index >= len(apps):
+            break
+            
+        # Calculate grid position
+        row = i // GRID_COLS
+        col = i % GRID_COLS
+        
+        # Calculate pixel position
+        x = start_x + col * (ICON_SIZE + ICON_SPACING)
+        y = start_y + row * (ICON_SIZE + ICON_SPACING)
+        
+        # Draw icon background
+        if app_index == selected_app:
+            display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, GRAY)
+            text_color = BLACK
+        else:
+            display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, DARK_GRAY)
+            text_color = WHITE
+        
+        # Draw app name (centered under icon)
+        text = apps[app_index]
+        if len(text) > 8:  # Truncate long names
+            text = text[:7] + '.'
+        text_width = len(text) * 6  # Assuming 6 pixels per character
+        text_x = x + (ICON_SIZE - text_width) // 2
+        display.draw_text(text_x, y + ICON_SIZE + 2, text, text_color, None)
+    
+    # Draw page number at bottom
+    page_text = f"Page {current_page + 1}/{total_pages}"
+    text_width = len(page_text) * 6
+    text_x = (LEFT_PANEL_WIDTH - text_width) // 2
+    display.draw_text(text_x, SCREEN_HEIGHT - 15, page_text, WHITE, None)
+
+# Draw right panel info
+def draw_right_panel(app_name, volume=75):
+    print(f"Drawing right panel for app: {app_name}")
+    # Clear right panel
+    display.fill_rect(LEFT_PANEL_WIDTH+1, 0, RIGHT_PANEL_WIDTH, SCREEN_HEIGHT, BLACK)
+    
     # Draw app name
-    display.draw_text(20, y, app, WHITE, scale=2)
-    # Draw volume bar
-    display.draw_progress_bar(150, y, 300, 25, (i+1)*25, GREEN, BLACK, WHITE)
-    y += 50
+    print("Drawing app name")
+    display.draw_text(LEFT_PANEL_WIDTH+20, 20, app_name, WHITE, None, scale=3)
+    
+    # Draw volume number
+    print("Drawing volume")
+    display.draw_text(LEFT_PANEL_WIDTH+20, 100, str(volume), WHITE, None, scale=4)
+    
+    # Draw bottom buttons
+    print("Drawing buttons")
+    button_y = SCREEN_HEIGHT - 60
+    button_width = 80
+    spacing = 20
+    
+    # Mute button
+    display.draw_button(LEFT_PANEL_WIDTH+20, button_y, button_width, 40, "Mute", WHITE, DARK_GRAY)
+    
+    # Mute Mic button
+    display.draw_button(LEFT_PANEL_WIDTH+20+button_width+spacing, button_y, button_width, 40, "Mic", WHITE, DARK_GRAY)
+    
+    # Master Volume button
+    display.draw_button(LEFT_PANEL_WIDTH+20+2*(button_width+spacing), button_y, button_width, 40, "Master", WHITE, DARK_GRAY)
+    print("Right panel drawing complete")
 
-# Draw status at bottom
-display.draw_text(20, 280, "Touch to select - Rotate to adjust", WHITE, scale=2)
+def handle_touch():
+    global current_page, is_dragging, drag_start_x, selected_app, last_x, last_y
+    
+    touched, raw_x, raw_y = touch.read_touch()
+    
+    if touched:
+        # Touch coordinates are flipped and inverted:
+        # - raw_y: 0 is right side, 320 is left side
+        # - raw_x: 0 is top, 320 is bottom
+        x = max(0, min(SCREEN_WIDTH, 480 - int(raw_y)))   # Flip and invert X
+        y = max(0, min(SCREEN_HEIGHT, int(raw_x)))        # Y just needs scaling
+        
+        last_x = x  # Store current position
+        last_y = y
+        print(f"\nTouch detected at x: {x}, y: {y}")  # Debug coordinates
+        
+        # Handle left panel touches (icon grid)
+        if x < LEFT_PANEL_WIDTH:
+            if not is_dragging:
+                is_dragging = True
+                drag_start_x = x
+                print("Started dragging in left panel")
+            else:
+                # Calculate drag distance
+                drag_distance = x - drag_start_x
+                
+                # Check for swipe
+                if abs(drag_distance) > SWIPE_THRESHOLD:
+                    items_per_page = GRID_COLS * GRID_ROWS
+                    total_pages = (len(apps) + items_per_page - 1) // items_per_page
+                    
+                    if drag_distance > 0 and current_page > 0:  # Swipe right
+                        current_page -= 1
+                        print(f"Page changed to {current_page + 1}")
+                        draw_app_list(selected_app)
+                        is_dragging = False
+                    elif drag_distance < 0 and current_page < total_pages - 1:  # Swipe left
+                        current_page += 1
+                        print(f"Page changed to {current_page + 1}")
+                        draw_app_list(selected_app)
+                        is_dragging = False
+        
+        # Handle right panel touches (buttons)
+        else:
+            button_y = SCREEN_HEIGHT - 60  # Move buttons to bottom like in draw function
+            button_height = 40
+            button_width = 80
+            spacing = 20
+            button_x = LEFT_PANEL_WIDTH + 20
+            
+            # Only process if touch is in button row
+            if button_y <= y <= button_y + button_height:
+                # Calculate relative x position from start of buttons
+                rel_x = x - button_x
+                print(f"Touch in button row - relative x: {rel_x}")  # Debug relative position
+                
+                # Define button regions
+                mute_end = button_width
+                mic_start = button_width + spacing
+                mic_end = 2*button_width + spacing
+                master_start = 2*button_width + 2*spacing
+                master_end = 3*button_width + 2*spacing
+                
+                # Check which button was pressed
+                if 0 <= rel_x <= mute_end:
+                    print("MUTE BUTTON PRESSED")
+                    # Add visual feedback
+                    display.draw_button(button_x, button_y, button_width, button_height, "Mute", BLACK, GRAY)
+                    time.sleep_ms(100)
+                    draw_right_panel(apps[selected_app])
+                elif mic_start <= rel_x <= mic_end:
+                    print("MIC BUTTON PRESSED")
+                    # Add visual feedback
+                    display.draw_button(button_x + button_width + spacing, button_y, button_width, button_height, "Mic", BLACK, GRAY)
+                    time.sleep_ms(100)
+                    draw_right_panel(apps[selected_app])
+                elif master_start <= rel_x <= master_end:
+                    print("MASTER BUTTON PRESSED")
+                    # Switch to Master volume app
+                    selected_app = 0  # Master is first app
+                    draw_app_list(selected_app)
+                    draw_right_panel(apps[selected_app])
+    
+    # Handle touch release
+    elif is_dragging:
+        is_dragging = False
+        # Handle tap (if we haven't dragged much)
+        if abs(drag_start_x - last_x) < SWIPE_THRESHOLD:
+            # Calculate grid position
+            start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
+            start_y = (SCREEN_HEIGHT - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING) - 20) // 2
+            
+            # Calculate which icon was tapped
+            col = (drag_start_x - start_x) // (ICON_SIZE + ICON_SPACING)
+            row = (last_y - start_y) // (ICON_SIZE + ICON_SPACING)
+            
+            if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
+                items_per_page = GRID_COLS * GRID_ROWS
+                tapped_index = current_page * items_per_page + row * GRID_COLS + col
+                if 0 <= tapped_index < len(apps):
+                    selected_app = tapped_index
+                    draw_app_list(selected_app)
+                    draw_right_panel(apps[selected_app])
 
+# Initialize rotary encoder
+encoder = RotaryEncoder(ROT_CLK, ROT_DT, ROT_SW)
+display_on = True
+
+# Initial draw
+print("Drawing initial UI...")
+selected_app = 0
+draw_app_list(selected_app)
+draw_right_panel(apps[selected_app])
+print("Initial UI drawn")
+
+# Main loop
+print("Starting main loop...")
 while True:
-    time.sleep(1)  # Keep the display on 
+    # Handle touch input
+    handle_touch()
+    
+    # Handle rotary encoder
+    value_changed, button_pressed = encoder.read()
+    
+    # Handle button press
+    if button_pressed:
+        display_on = not display_on
+        if display_on:
+            led_pwm.duty_u16(encoder.get_value())
+        else:
+            led_pwm.duty_u16(0)
+    
+    # Handle rotation
+    if value_changed and display_on:
+        brightness = encoder.get_value()
+        led_pwm.duty_u16(brightness)
+        print(f"Brightness: {brightness}")
+    
+    time.sleep_ms(1)  # Small delay to prevent busy waiting 
