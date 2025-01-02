@@ -4,84 +4,11 @@ from ft6236 import FT6236
 from rotary import RotaryEncoder
 import time
 
-print("Initializing display and touch...")
-
-# Initialize display
-print("Starting UI test...")
-
-# Display Pins
-SPI_SCK = 18    # Pin 7 on LCD
-SPI_MOSI = 19   # Pin 6 on LCD
-SPI_MISO = 16   # Pin 9 on LCD
-DC_PIN = 20     # Pin 5 on LCD
-RST_PIN = 21    # Pin 4 on LCD
-CS_PIN = 17     # Pin 3 on LCD
-LED_PIN = 22    # Pin 8 on LCD
-
-# Initialize LED backlight with PWM
-led_pwm = PWM(Pin(LED_PIN))
-led_pwm.freq(1000)  # Set PWM frequency to 1kHz
-brightness = 65535  # Max brightness (16-bit PWM)
-led_pwm.duty_u16(brightness)
-
-# Initialize display pins
-sck = Pin(SPI_SCK, Pin.OUT)
-mosi = Pin(SPI_MOSI, Pin.OUT)
-miso = Pin(SPI_MISO, Pin.IN)
-dc = Pin(DC_PIN, Pin.OUT)
-rst = Pin(RST_PIN, Pin.OUT)
-cs = Pin(CS_PIN, Pin.OUT)
-
-# Complete reset sequence
-print("Performing complete reset sequence...")
-
-# Rotary Encoder Pins
-ROT_CLK = 14
-ROT_DT = 15
-ROT_SW = 13
-
-# Screen dimensions
+# Constants and color definitions
 SCREEN_WIDTH = 480
 SCREEN_HEIGHT = 320
 LEFT_PANEL_WIDTH = 160  # Width of app list panel
 RIGHT_PANEL_WIDTH = SCREEN_WIDTH - LEFT_PANEL_WIDTH
-
-# Initialize SPI
-spi = SPI(0,
-          baudrate=62500000,   # Back to 62.5MHz for faster drawing
-          polarity=0,
-          phase=0,
-          bits=8,
-          firstbit=SPI.MSB,
-          sck=Pin(SPI_SCK),
-          mosi=Pin(SPI_MOSI),
-          miso=Pin(SPI_MISO))
-
-display = ILI9488(spi, dc=dc, cs=cs, rst=rst)
-
-# Touch controller pins
-TOUCH_SDA = 4   # GP4
-TOUCH_SCL = 5   # GP5
-TOUCH_INT = 6   # GP6
-TOUCH_RST = 7   # GP7
-
-# Initialize RST and INT pins
-rst_pin = Pin(TOUCH_RST, Pin.OUT)
-int_pin = Pin(TOUCH_INT, Pin.IN)
-
-# Reset touch controller
-print("Resetting touch controller...")
-rst_pin.value(0)  # Reset active low
-time.sleep_ms(10)
-rst_pin.value(1)
-time.sleep_ms(300)  # Wait for touch controller to initialize
-
-# Initialize I2C
-print("Initializing I2C...")
-i2c = I2C(0, sda=Pin(TOUCH_SDA), scl=Pin(TOUCH_SCL), freq=100000)
-
-# Initialize touch controller
-touch = FT6236(i2c, TOUCH_SDA, TOUCH_SCL)
 
 # Define colors (RGB565 format)
 BLACK = 0x0000
@@ -95,16 +22,6 @@ ICON_SIZE = 60  # Size of each app icon
 ICON_SPACING = 10  # Space between icons
 GRID_COLS = 2  # Number of columns
 GRID_ROWS = 3  # Number of visible rows
-
-print("Starting UI test...")
-
-# Clear screen
-print("Clearing screen...")
-display.fill(BLACK)
-
-# Draw panel divider
-print("Drawing panel divider...")
-display.draw_vline(LEFT_PANEL_WIDTH, 0, SCREEN_HEIGHT, WHITE)
 
 # Sample apps for testing (including blank apps)
 apps = [
@@ -126,25 +43,16 @@ apps = [
     "App 15"
 ]
 
-# Scrolling variables
+# Scrolling and UI state variables
 current_page = 0    # Current page number
 is_dragging = False
 drag_start_x = 0
 SWIPE_THRESHOLD = 50  # Minimum pixels to trigger page change
-
-# Initialize touch handling variables
-last_touch_time = 0
-TOUCH_DEBOUNCE_MS = 100  # 100ms debounce
-
-# Initialize UI state variables
-current_page = 0
-is_dragging = False
-drag_start_x = 0
 selected_app = 0
 last_x = 0
 last_y = 0
 
-# Draw app list (left panel)
+# Function definitions
 def draw_app_list(selected_index=0):
     # Clear left panel
     display.fill_rect(0, 0, LEFT_PANEL_WIDTH, SCREEN_HEIGHT, BLACK)
@@ -201,7 +109,6 @@ def draw_app_list(selected_index=0):
     text_x = (LEFT_PANEL_WIDTH - text_width) // 2
     display.draw_text(text_x, SCREEN_HEIGHT - 15, page_text, WHITE, None)
 
-# Draw right panel info
 def draw_right_panel(app_name, volume=75):
     print(f"Drawing right panel for app: {app_name}")
     
@@ -231,22 +138,25 @@ def draw_buttons(highlight_button=None):
     button_height = SCREEN_HEIGHT // 2 - 5
     button_x = button_panel_x + 5
     
-    # Clear only the button area
-    display.fill_rect(button_panel_x + 1, 0, button_panel_width - 1, SCREEN_HEIGHT, BLACK)
-    
-    # Mute button (top half)
-    mute_color = GRAY if highlight_button == 'mute' else DARK_GRAY
-    display.draw_button(button_x, 5, button_width, button_height, "Mute", WHITE, mute_color)
-    
-    # Mic button (bottom half)
-    mic_color = GRAY if highlight_button == 'mic' else DARK_GRAY
-    display.draw_button(button_x, button_height + 10, button_width, button_height, "Mic", WHITE, mic_color)
+    # Only clear the specific button being highlighted
+    if highlight_button == 'mute':
+        display.fill_rect(button_x, 5, button_width, button_height, GRAY)
+        display.draw_text(button_x + (button_width - 24) // 2, 5 + (button_height - 8) // 2, "Mute", BLACK, None)
+    elif highlight_button == 'mic':
+        display.fill_rect(button_x, button_height + 10, button_width, button_height, GRAY)
+        display.draw_text(button_x + (button_width - 18) // 2, button_height + 10 + (button_height - 8) // 2, "Mic", BLACK, None)
+    else:
+        # Draw both buttons in normal state
+        display.fill_rect(button_x, 5, button_width, button_height, DARK_GRAY)
+        display.draw_text(button_x + (button_width - 24) // 2, 5 + (button_height - 8) // 2, "Mute", WHITE, None)
+        
+        display.fill_rect(button_x, button_height + 10, button_width, button_height, DARK_GRAY)
+        display.draw_text(button_x + (button_width - 18) // 2, button_height + 10 + (button_height - 8) // 2, "Mic", WHITE, None)
 
 def handle_touch():
     global current_page, is_dragging, drag_start_x, selected_app, last_x, last_y
     
     touched, raw_x, raw_y = touch.read_touch()
-    current_time = time.ticks_ms()
     
     if touched:
         # Touch coordinates are flipped and inverted:
@@ -263,8 +173,25 @@ def handle_touch():
         last_y = y
         print(f"\nTouch detected at x: {x}, y: {y}")  # Debug coordinates
         
+        # Handle right panel touches (buttons)
+        if x >= SCREEN_WIDTH - 100:  # Button panel width is 100
+            button_height = SCREEN_HEIGHT // 2 - 5
+            
+            # Mute button (top half)
+            if 5 <= y <= button_height:
+                print("MUTE BUTTON PRESSED")
+                draw_buttons('mute')  # Highlight mute button
+                time.sleep_ms(50)  # Reduced delay
+                draw_buttons()  # Return to normal
+            # Mic button (bottom half)
+            elif button_height + 10 <= y <= SCREEN_HEIGHT - 5:
+                print("MIC BUTTON PRESSED")
+                draw_buttons('mic')  # Highlight mic button
+                time.sleep_ms(50)  # Reduced delay
+                draw_buttons()  # Return to normal
+        
         # Handle left panel touches (icon grid)
-        if x < LEFT_PANEL_WIDTH:
+        elif x < LEFT_PANEL_WIDTH:
             if not is_dragging:
                 is_dragging = True
                 drag_start_x = x
@@ -288,30 +215,6 @@ def handle_touch():
                         print(f"Page changed to {current_page + 1}")
                         draw_app_list(selected_app)
                         is_dragging = False
-        
-        # Handle right panel touches (buttons)
-        else:
-            button_panel_width = 100
-            button_panel_x = SCREEN_WIDTH - button_panel_width
-            
-            # Only process touches in button column
-            if x >= button_panel_x:
-                button_height = SCREEN_HEIGHT // 2 - 5
-                
-                # Mute button (top half)
-                if 5 <= y <= button_height:
-                    print("MUTE BUTTON PRESSED")
-                    # Add visual feedback
-                    draw_buttons('mute')  # Highlight mute button
-                    time.sleep_ms(100)
-                    draw_buttons()  # Return to normal
-                # Mic button (bottom half)
-                elif button_height + 10 <= y <= SCREEN_HEIGHT - 5:
-                    print("MIC BUTTON PRESSED")
-                    # Add visual feedback
-                    draw_buttons('mic')  # Highlight mic button
-                    time.sleep_ms(100)
-                    draw_buttons()  # Return to normal
     
     # Handle touch release
     elif is_dragging:
@@ -339,38 +242,86 @@ def handle_touch():
                         draw_app_list(selected_app)
                         draw_right_panel(apps[selected_app])
 
-# Initialize rotary encoder
-encoder = RotaryEncoder(ROT_CLK, ROT_DT, ROT_SW)
-display_on = True
+# Initialize hardware
+print("Initializing display and touch...")
 
-# Initial draw
+# Display Pins
+SPI_SCK = 18    # Pin 7 on LCD
+SPI_MOSI = 19   # Pin 6 on LCD
+SPI_MISO = 16   # Pin 9 on LCD
+DC_PIN = 20     # Pin 5 on LCD
+RST_PIN = 21    # Pin 4 on LCD
+CS_PIN = 17     # Pin 3 on LCD
+LED_PIN = 22    # Pin 8 on LCD
+
+# Initialize LED backlight with PWM
+led_pwm = PWM(Pin(LED_PIN))
+led_pwm.freq(1000)  # Set PWM frequency to 1kHz
+brightness = 65535  # Max brightness (16-bit PWM)
+led_pwm.duty_u16(brightness)
+
+# Initialize display pins
+sck = Pin(SPI_SCK, Pin.OUT)
+mosi = Pin(SPI_MOSI, Pin.OUT)
+miso = Pin(SPI_MISO, Pin.IN)
+dc = Pin(DC_PIN, Pin.OUT)
+rst = Pin(RST_PIN, Pin.OUT)
+cs = Pin(CS_PIN, Pin.OUT)
+
+# Initialize SPI
+spi = SPI(0,
+          baudrate=62500000,   # 62.5MHz for faster drawing
+          polarity=0,
+          phase=0,
+          bits=8,
+          firstbit=SPI.MSB,
+          sck=Pin(SPI_SCK),
+          mosi=Pin(SPI_MOSI),
+          miso=Pin(SPI_MISO))
+
+display = ILI9488(spi, dc=dc, cs=cs, rst=rst)
+
+# Touch controller pins
+TOUCH_SDA = 4   # GP4
+TOUCH_SCL = 5   # GP5
+TOUCH_INT = 6   # GP6
+TOUCH_RST = 7   # GP7
+
+# Initialize RST and INT pins
+rst_pin = Pin(TOUCH_RST, Pin.OUT)
+int_pin = Pin(TOUCH_INT, Pin.IN)
+
+# Reset touch controller
+print("Resetting touch controller...")
+rst_pin.value(0)  # Reset active low
+time.sleep_ms(10)
+rst_pin.value(1)
+time.sleep_ms(300)  # Wait for touch controller to initialize
+
+# Initialize I2C
+print("Initializing I2C...")
+i2c = I2C(0, sda=Pin(TOUCH_SDA), scl=Pin(TOUCH_SCL), freq=100000)
+
+# Initialize touch controller
+touch = FT6236(i2c, TOUCH_SDA, TOUCH_SCL)
+
+print("Starting UI test...")
+
+# Clear screen
+print("Clearing screen...")
+display.fill(BLACK)
+
+# Draw panel divider
+print("Drawing panel divider...")
+display.draw_vline(LEFT_PANEL_WIDTH, 0, SCREEN_HEIGHT, WHITE)
+
+# Draw initial UI elements
 print("Drawing initial UI...")
-selected_app = 0
-draw_app_list(selected_app)
-draw_right_panel(apps[selected_app])
-print("Initial UI drawn")
+draw_app_list(0)  # Draw initial app list
+draw_right_panel(apps[0])  # Draw initial app info
+draw_buttons()  # Draw initial buttons
 
 # Main loop
-print("Starting main loop...")
 while True:
-    # Handle touch input
     handle_touch()
-    
-    # Handle rotary encoder
-    value_changed, button_pressed = encoder.read()
-    
-    # Handle button press
-    if button_pressed:
-        display_on = not display_on
-        if display_on:
-            led_pwm.duty_u16(encoder.get_value())
-        else:
-            led_pwm.duty_u16(0)
-    
-    # Handle rotation
-    if value_changed and display_on:
-        brightness = encoder.get_value()
-        led_pwm.duty_u16(brightness)
-        print(f"Brightness: {brightness}")
-    
-    time.sleep_ms(1)  # Small delay to prevent busy waiting 
+    time.sleep_ms(10)  # Small delay to prevent overwhelming the processor 
