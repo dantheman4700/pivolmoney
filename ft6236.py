@@ -69,15 +69,18 @@ class FT6236:
                     return True, x, y
                 
             else:
-                # Touch released
+                # Touch released - wait for debounce before allowing new touch
                 if self.last_touch_state:
                     self.last_touch_state = False
                     self.continuous_touch = False
+                    self.last_touch_time = current_time  # Reset debounce timer on release
                     
             return False, 0, 0
             
         except Exception as e:
             print(f"Error reading touch data: {e}")
+            self.last_touch_state = False
+            self.continuous_touch = False
             return False, 0, 0
     
     def set_debounce(self, ms):

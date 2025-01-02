@@ -204,37 +204,49 @@ def draw_app_list(selected_index=0):
 # Draw right panel info
 def draw_right_panel(app_name, volume=75):
     print(f"Drawing right panel for app: {app_name}")
-    # Clear right panel
-    display.fill_rect(LEFT_PANEL_WIDTH+1, 0, RIGHT_PANEL_WIDTH, SCREEN_HEIGHT, BLACK)
     
-    # Draw app name
+    # Define panel sections
+    info_panel_width = RIGHT_PANEL_WIDTH - 100  # Main info area
+    button_panel_width = 100  # Width for buttons column
+    button_panel_x = SCREEN_WIDTH - button_panel_width
+    
+    # Clear only the info area
+    display.fill_rect(LEFT_PANEL_WIDTH+1, 0, info_panel_width, SCREEN_HEIGHT, BLACK)
+    
+    # Draw vertical divider for button column
+    display.draw_vline(button_panel_x, 0, SCREEN_HEIGHT, WHITE)
+    
+    # Draw app info in main area
     print("Drawing app name")
     display.draw_text(LEFT_PANEL_WIDTH+20, 20, app_name, WHITE, None, scale=3)
     
-    # Draw volume number
     print("Drawing volume")
     display.draw_text(LEFT_PANEL_WIDTH+20, 100, str(volume), WHITE, None, scale=4)
+
+def draw_buttons(highlight_button=None):
+    """Draw the Mute/Mic buttons. If highlight_button is 'mute' or 'mic', draw it highlighted"""
+    button_panel_width = 100
+    button_panel_x = SCREEN_WIDTH - button_panel_width
+    button_width = button_panel_width - 10
+    button_height = SCREEN_HEIGHT // 2 - 5
+    button_x = button_panel_x + 5
     
-    # Draw bottom buttons
-    print("Drawing buttons")
-    button_y = SCREEN_HEIGHT - 60
-    button_width = 80
-    spacing = 20
+    # Clear only the button area
+    display.fill_rect(button_panel_x + 1, 0, button_panel_width - 1, SCREEN_HEIGHT, BLACK)
     
-    # Mute button
-    display.draw_button(LEFT_PANEL_WIDTH+20, button_y, button_width, 40, "Mute", WHITE, DARK_GRAY)
+    # Mute button (top half)
+    mute_color = GRAY if highlight_button == 'mute' else DARK_GRAY
+    display.draw_button(button_x, 5, button_width, button_height, "Mute", WHITE, mute_color)
     
-    # Mute Mic button
-    display.draw_button(LEFT_PANEL_WIDTH+20+button_width+spacing, button_y, button_width, 40, "Mic", WHITE, DARK_GRAY)
-    
-    # Master Volume button
-    display.draw_button(LEFT_PANEL_WIDTH+20+2*(button_width+spacing), button_y, button_width, 40, "Master", WHITE, DARK_GRAY)
-    print("Right panel drawing complete")
+    # Mic button (bottom half)
+    mic_color = GRAY if highlight_button == 'mic' else DARK_GRAY
+    display.draw_button(button_x, button_height + 10, button_width, button_height, "Mic", WHITE, mic_color)
 
 def handle_touch():
     global current_page, is_dragging, drag_start_x, selected_app, last_x, last_y
     
     touched, raw_x, raw_y = touch.read_touch()
+    current_time = time.ticks_ms()
     
     if touched:
         # Touch coordinates are flipped and inverted:
@@ -243,6 +255,10 @@ def handle_touch():
         x = max(0, min(SCREEN_WIDTH, 480 - int(raw_y)))   # Flip and invert X
         y = max(0, min(SCREEN_HEIGHT, int(raw_x)))        # Y just needs scaling
         
+        # Validate touch coordinates
+        if x < 0 or x >= SCREEN_WIDTH or y < 0 or y >= SCREEN_HEIGHT:
+            return
+            
         last_x = x  # Store current position
         last_y = y
         print(f"\nTouch detected at x: {x}, y: {y}")  # Debug coordinates
@@ -275,44 +291,27 @@ def handle_touch():
         
         # Handle right panel touches (buttons)
         else:
-            button_y = SCREEN_HEIGHT - 60  # Move buttons to bottom like in draw function
-            button_height = 40
-            button_width = 80
-            spacing = 20
-            button_x = LEFT_PANEL_WIDTH + 20
+            button_panel_width = 100
+            button_panel_x = SCREEN_WIDTH - button_panel_width
             
-            # Only process if touch is in button row
-            if button_y <= y <= button_y + button_height:
-                # Calculate relative x position from start of buttons
-                rel_x = x - button_x
-                print(f"Touch in button row - relative x: {rel_x}")  # Debug relative position
+            # Only process touches in button column
+            if x >= button_panel_x:
+                button_height = SCREEN_HEIGHT // 2 - 5
                 
-                # Define button regions
-                mute_end = button_width
-                mic_start = button_width + spacing
-                mic_end = 2*button_width + spacing
-                master_start = 2*button_width + 2*spacing
-                master_end = 3*button_width + 2*spacing
-                
-                # Check which button was pressed
-                if 0 <= rel_x <= mute_end:
+                # Mute button (top half)
+                if 5 <= y <= button_height:
                     print("MUTE BUTTON PRESSED")
                     # Add visual feedback
-                    display.draw_button(button_x, button_y, button_width, button_height, "Mute", BLACK, GRAY)
+                    draw_buttons('mute')  # Highlight mute button
                     time.sleep_ms(100)
-                    draw_right_panel(apps[selected_app])
-                elif mic_start <= rel_x <= mic_end:
+                    draw_buttons()  # Return to normal
+                # Mic button (bottom half)
+                elif button_height + 10 <= y <= SCREEN_HEIGHT - 5:
                     print("MIC BUTTON PRESSED")
                     # Add visual feedback
-                    display.draw_button(button_x + button_width + spacing, button_y, button_width, button_height, "Mic", BLACK, GRAY)
+                    draw_buttons('mic')  # Highlight mic button
                     time.sleep_ms(100)
-                    draw_right_panel(apps[selected_app])
-                elif master_start <= rel_x <= master_end:
-                    print("MASTER BUTTON PRESSED")
-                    # Switch to Master volume app
-                    selected_app = 0  # Master is first app
-                    draw_app_list(selected_app)
-                    draw_right_panel(apps[selected_app])
+                    draw_buttons()  # Return to normal
     
     # Handle touch release
     elif is_dragging:
@@ -323,17 +322,22 @@ def handle_touch():
             start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
             start_y = (SCREEN_HEIGHT - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING) - 20) // 2
             
-            # Calculate which icon was tapped
-            col = (drag_start_x - start_x) // (ICON_SIZE + ICON_SPACING)
-            row = (last_y - start_y) // (ICON_SIZE + ICON_SPACING)
-            
-            if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
-                items_per_page = GRID_COLS * GRID_ROWS
-                tapped_index = current_page * items_per_page + row * GRID_COLS + col
-                if 0 <= tapped_index < len(apps):
-                    selected_app = tapped_index
-                    draw_app_list(selected_app)
-                    draw_right_panel(apps[selected_app])
+            # Validate coordinates before calculating tap position
+            if (0 <= last_x < LEFT_PANEL_WIDTH and 
+                0 <= last_y < SCREEN_HEIGHT and 
+                start_x <= drag_start_x < start_x + GRID_COLS * (ICON_SIZE + ICON_SPACING)):
+                
+                # Calculate which icon was tapped
+                col = (drag_start_x - start_x) // (ICON_SIZE + ICON_SPACING)
+                row = (last_y - start_y) // (ICON_SIZE + ICON_SPACING)
+                
+                if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
+                    items_per_page = GRID_COLS * GRID_ROWS
+                    tapped_index = current_page * items_per_page + row * GRID_COLS + col
+                    if 0 <= tapped_index < len(apps):
+                        selected_app = tapped_index
+                        draw_app_list(selected_app)
+                        draw_right_panel(apps[selected_app])
 
 # Initialize rotary encoder
 encoder = RotaryEncoder(ROT_CLK, ROT_DT, ROT_SW)
