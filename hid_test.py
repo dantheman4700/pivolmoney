@@ -16,18 +16,22 @@ try:
     time.sleep(3)
     
     # Initialize HID device
+    print("Creating HID device...")
     hid = HIDDevice(GAMEPAD_REPORT_DESCRIPTOR)
+    print("HID device created successfully")
     
     counter = 0
     last_report_time = 0
     last_button_state = False
     
+    print("Entering main loop...")
     while True:
         current_time = time.ticks_ms()
         
         # Check BOOTSEL button - detect press and release
-        button_state = rp2.bootsel_button()
+        button_state = machine.Pin(23, machine.Pin.IN, machine.Pin.PULL_DOWN).value()
         if button_state and not last_button_state:  # Button just pressed
+            print("BOOTSEL pressed, exiting...")
             break  # Exit loop to cleanup
         last_button_state = button_state
         
@@ -36,20 +40,30 @@ try:
             counter = (counter + 1) % 256
             report = bytearray(8)  # Create 8-byte report
             report[0] = counter    # Set first byte to counter value
-            try:
-                hid.send_report(report)
-            except Exception as e:
-                print(f"Error sending report: {e}")
+            print(f"Sending report: counter = {counter}")
+            if hid.send_report(report):
+                print("Report sent successfully")
+            else:
+                print("Failed to send report")
             last_report_time = current_time
         
-        time.sleep_ms(10)
+        # Small delay to prevent tight loop
+        time.sleep_ms(1)
 
 except Exception as e:
     print(f"Error in main loop: {e}")
+    import sys
+    sys.print_exception(e)  # Print full traceback
 
 finally:
     # Clean exit
     if hid:
-        hid.cleanup()  # This will restore serial mode
-    # Give time for USB to reset before script ends
-    time.sleep(1) 
+        print("Cleaning up USB...")
+        try:
+            hid.cleanup()  # This will restore serial mode
+            print("Cleanup complete")
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+            import sys
+            sys.print_exception(e)
+    time.sleep(1)  # Give time for USB to reset 
