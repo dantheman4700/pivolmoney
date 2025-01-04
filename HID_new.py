@@ -10,8 +10,15 @@ def log(message):
     global _log_initialized
     # Use 'w' for first write, 'a' for subsequent writes
     mode = 'w' if not _log_initialized else 'a'
-    with open('hid_log.txt', mode) as f:
-        f.write(f"{message}\n")
+    timestamp = time.ticks_ms()
+    try:
+        with open('hid_log.txt', mode) as f:
+            f.write(f"[{timestamp}] {message}\n")
+            f.flush()  # Force write to file
+    except Exception as e:
+        with open('hid_log.txt', 'a') as f:
+            f.write(f"[{timestamp}] Log error: {str(e)}\n")
+            f.flush()
     _log_initialized = True
 
 class CustomHIDDevice:
@@ -117,25 +124,31 @@ class CustomHIDDevice:
 
     def __init__(self):
         """Initialize custom HID device"""
+        log("CustomHIDDevice: Creating new instance")
         self.usb_dev = USBDevice()
         self.in_buffer = bytearray(8)
         self.out_buffer = bytearray(8)
         self.in_endpoint = 0x81
         self.out_endpoint = 0x01
         self._device_configured = False
+        log("CustomHIDDevice: Instance created successfully")
 
     def init(self):
         """Initialize the USB device"""
         try:
+            log("USB Init: Starting initialization")
             # First, deactivate any current USB configuration
             if self.usb_dev.active():
+                log("USB Init: Deactivating current USB configuration")
                 self.usb_dev.active(False)
                 time.sleep(1)
             
             # Set built-in driver to none
+            log("USB Init: Setting built-in driver to NONE")
             self.usb_dev.builtin_driver = USBDevice.BUILTIN_NONE
             
             # String descriptors with proper USB string descriptor format
+            log("USB Init: Creating string descriptors")
             str_descriptors = {
                 0: bytes([0x04, 0x03, 0x09, 0x04]),  # Language ID (English)
                 1: self._create_string_descriptor("Raspberry Pi"),
@@ -143,6 +156,7 @@ class CustomHIDDevice:
             }
             
             # Configure the USB device
+            log("USB Init: Configuring USB device with descriptors")
             self.usb_dev.config(
                 desc_dev=self.DEVICE_DESCRIPTOR,
                 desc_cfg=self.CONFIG_DESCRIPTOR,
@@ -152,30 +166,37 @@ class CustomHIDDevice:
                 open_itf_cb=self._interface_callback
             )
             
-            log("USB device configured, activating...")
+            log("USB Init: Configuration complete, activating device")
             self.usb_dev.active(True)
             
             # Wait for device to be configured
             timeout = 100  # 10 seconds
+            log("USB Init: Waiting for device configuration")
             while timeout > 0:
                 if self._device_configured:
+                    log("USB Init: Device configured successfully")
                     break
                 time.sleep(0.1)
                 timeout -= 1
+                if timeout % 10 == 0:  # Log every second
+                    log(f"USB Init: Still waiting for configuration, {timeout/10} seconds remaining")
             
             if timeout <= 0:
-                log("Timeout waiting for device configuration")
+                log("USB Init: Timeout waiting for device configuration")
                 return False
                 
-            log("Device configured, starting data reception...")
+            log("USB Init: Starting data reception")
             # Start listening for incoming data
             self._start_receive()
             
-            log("HID device activated and ready")
+            log("USB Init: HID device fully initialized and ready")
             return True
             
         except Exception as e:
-            log(f"Failed to initialize USB device: {e}")
+            log(f"USB Init Error: Failed to initialize USB device: {str(e)}")
+            log(f"USB Init Error type: {type(e)}")
+            import sys
+            sys.print_exception(e)
             return False
 
     def _create_string_descriptor(self, string):
@@ -192,8 +213,14 @@ class CustomHIDDevice:
 
     def _start_receive(self):
         """Start listening for incoming data"""
-        if self.usb_dev and self.usb_dev.active():
-            self.usb_dev.submit_xfer(self.out_endpoint, self.out_buffer)
+        try:
+            if self.usb_dev and self.usb_dev.active():
+                log("Starting receive on OUT endpoint")
+                self.usb_dev.submit_xfer(self.out_endpoint, self.out_buffer)
+            else:
+                log("Warning: Cannot start receive - device not active")
+        except Exception as e:
+            log(f"Error starting receive: {str(e)}")
 
     def _xfer_callback(self, ep, result, xferred_bytes):
         """Handle transfer completion"""
@@ -261,15 +288,22 @@ class CustomHIDDevice:
     def deinit(self):
         """Deinitialize the USB device"""
         try:
+            log("USB Deinit: Starting deinitialization")
             if self.usb_dev.active():
+                log("USB Deinit: Deactivating device")
                 self.usb_dev.active(False)
                 time.sleep(1)
+            log("USB Deinit: Setting built-in driver back to DEFAULT")
             self.usb_dev.builtin_driver = USBDevice.BUILTIN_DEFAULT
+            log("USB Deinit: Reactivating with default driver")
             self.usb_dev.active(True)
-            log("USB device deinitialized")
+            log("USB Deinit: Device successfully deinitialized")
             return True
         except Exception as e:
-            log(f"Failed to deinitialize USB device: {e}")
+            log(f"USB Deinit Error: Failed to deinitialize USB device: {str(e)}")
+            log(f"USB Deinit Error type: {type(e)}")
+            import sys
+            sys.print_exception(e)
             return False
 
     def send_data(self, data):
