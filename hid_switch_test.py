@@ -1,22 +1,26 @@
 import time
-from HID_new import CustomHIDDevice
+import rp2
+from machine import bootloader
+from HID_new import CustomHIDDevice, log
 
-print("This script will switch the Pico to Custom HID mode.")
-print("Thonny will disconnect when this happens.")
-print("The device will echo back any data it receives.")
-print()
-print("Starting in 3 seconds...")
+# Start with a fresh log file
+log("Starting HID switch test...")
+log("This script will switch the Pico to Custom HID mode.")
+log("Press BOOTSEL button at any time to reboot to bootloader.")
+log("The device will echo back any data it receives.")
+log("")
+log("Starting in 3 seconds...")
 time.sleep(3)
 
 # Create device
 device = CustomHIDDevice()
 
-print("Switching to HID mode...")
+log("Switching to HID mode...")
 if not device.init():
-    print("Failed to initialize device!")
+    log("Failed to initialize device!")
     raise SystemExit
 
-print("Device initialized, sending test sequence...")
+log("Device initialized, sending test sequence...")
 
 # Send a sequence of test patterns
 test_patterns = [
@@ -26,22 +30,47 @@ test_patterns = [
 ]
 
 for i, pattern in enumerate(test_patterns, 1):
-    print(f"\nSending test pattern {i}: {[hex(x) for x in pattern]}")
+    log(f"\nSending test pattern {i}: {[hex(x) for x in pattern]}")
     device.send_data(pattern)
     time.sleep(1)  # Wait between patterns
 
-print("\nTest patterns sent. Now waiting for any incoming data.")
-print("The device will echo back any data it receives.")
-print("Press Ctrl+C to exit...")
+log("\nTest patterns sent. Now waiting for any incoming data.")
+log("The device will echo back any data it receives.")
+log("Press BOOTSEL to reboot to bootloader, or Ctrl+C to exit...")
 
 try:
+    # Initial state
+    last_state = rp2.bootsel_button()
+    log(f"Initial state: {'Pressed' if last_state else 'Released'}")
+    
+    debounce_time = 50  # 50ms debounce
+    last_change = time.ticks_ms()
+    
     while True:
-        time.sleep(0.1)
+        current_state = rp2.bootsel_button()
+        current_time = time.ticks_ms()
+        
+        # Only process state changes after debounce period
+        if current_state != last_state and time.ticks_diff(current_time, last_change) > debounce_time:
+            log(f"BOOTSEL button {'pressed' if current_state else 'released'}")
+            if current_state:  # Button pressed
+                log("\nBOOTSEL button pressed, rebooting to bootloader...")
+                device.deinit()  # Clean up USB
+                time.sleep(0.5)  # Give it time to clean up
+                machine.bootloader()  # Reboot to bootloader
+            last_state = current_state
+            last_change = current_time
+        
+        # Print debug info every 2 seconds
+        if time.ticks_ms() % 2000 < 100:
+            log(f"Debug - Current state: {'Pressed' if current_state else 'Released'}")
+        
+        time.sleep_ms(10)
 except KeyboardInterrupt:
-    print("\nExiting...")
+    log("\nExiting...")
 
 # Switch back to CDC mode
-print("Switching back to CDC mode...")
+log("Switching back to CDC mode...")
 device.deinit()
 
-print("Test complete! You can reconnect in Thonny now.") 
+log("Test complete! You can reconnect in Thonny now.") 

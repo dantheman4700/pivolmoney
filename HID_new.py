@@ -2,6 +2,18 @@ from machine import USBDevice
 import struct
 import time
 
+# Global variable for log initialization state
+_log_initialized = False
+
+def log(message):
+    """Write log message to file, overwriting if it's the first message"""
+    global _log_initialized
+    # Use 'w' for first write, 'a' for subsequent writes
+    mode = 'w' if not _log_initialized else 'a'
+    with open('hid_log.txt', mode) as f:
+        f.write(f"{message}\n")
+    _log_initialized = True
+
 class CustomHIDDevice:
     # USB Device Descriptor
     DEVICE_DESCRIPTOR = bytes([
@@ -140,7 +152,7 @@ class CustomHIDDevice:
                 open_itf_cb=self._interface_callback
             )
             
-            print("USB device configured, activating...")
+            log("USB device configured, activating...")
             self.usb_dev.active(True)
             
             # Wait for device to be configured
@@ -152,18 +164,18 @@ class CustomHIDDevice:
                 timeout -= 1
             
             if timeout <= 0:
-                print("Timeout waiting for device configuration")
+                log("Timeout waiting for device configuration")
                 return False
                 
-            print("Device configured, starting data reception...")
+            log("Device configured, starting data reception...")
             # Start listening for incoming data
             self._start_receive()
             
-            print("HID device activated and ready")
+            log("HID device activated and ready")
             return True
             
         except Exception as e:
-            print(f"Failed to initialize USB device: {e}")
+            log(f"Failed to initialize USB device: {e}")
             return False
 
     def _create_string_descriptor(self, string):
@@ -188,17 +200,17 @@ class CustomHIDDevice:
         if result:
             if ep == self.out_endpoint:  # Data received from host
                 data = [hex(x) for x in self.out_buffer[:xferred_bytes]]
-                print(f"Received data from host on EP {hex(ep)}: {data}")
+                log(f"Received data from host on EP {hex(ep)}: {data}")
                 # Echo received data back to host
                 self.send_data(self.out_buffer[:xferred_bytes])
                 # Start listening for next packet
                 self._start_receive()
             else:  # Data sent to host
-                print(f"Data sent to host on EP {hex(ep)}: {xferred_bytes} bytes")
+                log(f"Data sent to host on EP {hex(ep)}: {xferred_bytes} bytes")
         else:
-            print(f"Transfer failed on EP {hex(ep)}")
+            log(f"Transfer failed on EP {hex(ep)}")
             if ep == self.out_endpoint:
-                print("Restarting receive after failure")
+                log("Restarting receive after failure")
                 self._start_receive()
 
     def _control_callback(self, stage, data):
@@ -211,7 +223,7 @@ class CustomHIDDevice:
                     bRequest = setup_data[1]
                     wValue = setup_data[2] | (setup_data[3] << 8)
                     wIndex = setup_data[4] | (setup_data[5] << 8)
-                    print(f"Control Setup: Type={hex(bmRequestType)} Request={hex(bRequest)} Value={hex(wValue)} Index={hex(wIndex)}")
+                    log(f"Control Setup: Type={hex(bmRequestType)} Request={hex(bRequest)} Value={hex(wValue)} Index={hex(wIndex)}")
                     
                     # Handle GET_DESCRIPTOR requests
                     if bmRequestType == 0x81 and bRequest == 0x06:
@@ -219,10 +231,10 @@ class CustomHIDDevice:
                         descriptor_index = wValue & 0xFF
                         
                         if descriptor_type == 0x22:  # Report descriptor
-                            print("Sending HID Report Descriptor")
+                            log("Sending HID Report Descriptor")
                             return self.REPORT_DESCRIPTOR
                         elif descriptor_type == 0x03:  # String descriptor
-                            print(f"Sending String Descriptor {descriptor_index}")
+                            log(f"Sending String Descriptor {descriptor_index}")
                             if descriptor_index == 0:
                                 return bytes([0x04, 0x03, 0x09, 0x04])
                             elif descriptor_index == 1:
@@ -232,17 +244,17 @@ class CustomHIDDevice:
                     
                     # Handle SET_CONFIGURATION
                     elif bmRequestType == 0x00 and bRequest == 0x09:
-                        print("Set Configuration request")
+                        log("Set Configuration request")
                         self._device_configured = True
                         
             return True
         except Exception as e:
-            print(f"Control callback error: {e}")
+            log(f"Control callback error: {e}")
             return False
 
     def _interface_callback(self, descriptor):
         """Called when interface is opened by host"""
-        print("Interface opened by host")
+        log("Interface opened by host")
         self._device_configured = True
         return True
 
@@ -254,9 +266,10 @@ class CustomHIDDevice:
                 time.sleep(1)
             self.usb_dev.builtin_driver = USBDevice.BUILTIN_DEFAULT
             self.usb_dev.active(True)
+            log("USB device deinitialized")
             return True
         except Exception as e:
-            print(f"Failed to deinitialize USB device: {e}")
+            log(f"Failed to deinitialize USB device: {e}")
             return False
 
     def send_data(self, data):
@@ -264,7 +277,7 @@ class CustomHIDDevice:
         if len(data) > 8:
             data = data[:8]  # Truncate to 8 bytes
         self.in_buffer[:len(data)] = data
-        print(f"Sending data to host: {[hex(x) for x in self.in_buffer]}")
+        log(f"Sending data to host: {[hex(x) for x in self.in_buffer]}")
         result = self.usb_dev.submit_xfer(self.in_endpoint, self.in_buffer)
-        print(f"Send result: {result}")
+        log(f"Send result: {result}")
         return result 
