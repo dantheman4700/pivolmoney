@@ -52,6 +52,23 @@ selected_app = 0
 last_x = 0
 last_y = 0
 
+# Display state variables
+display_on = True
+current_brightness = 65535  # Max brightness (16-bit PWM)
+
+def set_display_brightness(brightness):
+    """Set display brightness via PWM"""
+    global current_brightness
+    current_brightness = max(0, min(65535, brightness))  # Clamp between 0 and 65535
+    if display_on:
+        led_pwm.duty_u16(current_brightness)
+
+def toggle_display():
+    """Toggle display on/off"""
+    global display_on
+    display_on = not display_on
+    led_pwm.duty_u16(current_brightness if display_on else 0)
+
 # Function definitions
 def draw_app_list(selected_index=0):
     # Clear left panel
@@ -129,6 +146,52 @@ def draw_right_panel(app_name, volume=75):
     
     print("Drawing volume")
     display.draw_text(LEFT_PANEL_WIDTH+20, 100, str(volume), WHITE, None, scale=4)
+    
+    # Draw media controls
+    draw_media_controls()
+
+def draw_media_controls(highlight_button=None):
+    """Draw media control buttons (Play/Pause, Next, Previous) in their own section"""
+    info_panel_width = RIGHT_PANEL_WIDTH - 100  # Main info area width
+    media_section_height = 50  # Height of media control section
+    button_height = 40
+    
+    # Draw dividing line above media controls
+    y_divider = SCREEN_HEIGHT - media_section_height
+    display.draw_hline(LEFT_PANEL_WIDTH, y_divider, info_panel_width, WHITE)
+    
+    # Calculate button dimensions and positions
+    button_width = info_panel_width // 3  # Equal width for all three buttons
+    button_y = y_divider + (media_section_height - button_height) // 2  # Center buttons vertically
+    
+    # Calculate x positions for buttons
+    prev_x = LEFT_PANEL_WIDTH
+    play_x = LEFT_PANEL_WIDTH + button_width
+    next_x = LEFT_PANEL_WIDTH + 2 * button_width
+    
+    # Draw Previous button
+    if highlight_button == 'prev':
+        display.fill_rect(prev_x, button_y, button_width, button_height, GRAY)
+        display.draw_text(prev_x + (button_width - 30) // 2, button_y + (button_height - 8) // 2, "Prev", BLACK, None)
+    else:
+        display.fill_rect(prev_x, button_y, button_width, button_height, DARK_GRAY)
+        display.draw_text(prev_x + (button_width - 30) // 2, button_y + (button_height - 8) // 2, "Prev", WHITE, None)
+    
+    # Draw Play/Pause button
+    if highlight_button == 'play':
+        display.fill_rect(play_x, button_y, button_width, button_height, GRAY)
+        display.draw_text(play_x + (button_width - 36) // 2, button_y + (button_height - 8) // 2, "Play", BLACK, None)
+    else:
+        display.fill_rect(play_x, button_y, button_width, button_height, DARK_GRAY)
+        display.draw_text(play_x + (button_width - 36) // 2, button_y + (button_height - 8) // 2, "Play", WHITE, None)
+    
+    # Draw Next button
+    if highlight_button == 'next':
+        display.fill_rect(next_x, button_y, button_width, button_height, GRAY)
+        display.draw_text(next_x + (button_width - 30) // 2, button_y + (button_height - 8) // 2, "Next", BLACK, None)
+    else:
+        display.fill_rect(next_x, button_y, button_width, button_height, DARK_GRAY)
+        display.draw_text(next_x + (button_width - 30) // 2, button_y + (button_height - 8) // 2, "Next", WHITE, None)
 
 def draw_buttons(highlight_button=None):
     """Draw the Mute/Mic buttons. If highlight_button is 'mute' or 'mic', draw it highlighted"""
@@ -159,20 +222,44 @@ def handle_touch():
     touched, raw_x, raw_y = touch.read_touch()
     
     if touched:
-        # Touch coordinates are flipped and inverted:
-        # - raw_y: 0 is right side, 320 is left side
-        # - raw_x: 0 is top, 320 is bottom
-        x = max(0, min(SCREEN_WIDTH, 480 - int(raw_y)))   # Flip and invert X
-        y = max(0, min(SCREEN_HEIGHT, int(raw_x)))        # Y just needs scaling
+        x = max(0, min(SCREEN_WIDTH, 480 - int(raw_y)))
+        y = max(0, min(SCREEN_HEIGHT, int(raw_x)))
         
-        # Validate touch coordinates
         if x < 0 or x >= SCREEN_WIDTH or y < 0 or y >= SCREEN_HEIGHT:
             return
             
-        last_x = x  # Store current position
+        last_x = x
         last_y = y
-        print(f"\nTouch detected at x: {x}, y: {y}")  # Debug coordinates
+        print(f"\nTouch detected at x: {x}, y: {y}")
         
+        # Handle media control touches
+        info_panel_width = RIGHT_PANEL_WIDTH - 100
+        media_section_height = 50
+        y_divider = SCREEN_HEIGHT - media_section_height
+        
+        if LEFT_PANEL_WIDTH < x < SCREEN_WIDTH - 100 and y > y_divider:  # In media control section
+            button_width = info_panel_width // 3
+            
+            # Calculate which button was pressed based on x position
+            button_x = x - LEFT_PANEL_WIDTH
+            button_index = button_x // button_width
+            
+            if button_index == 0:
+                print("PREVIOUS TRACK")
+                draw_media_controls('prev')
+                time.sleep_ms(50)
+                draw_media_controls()
+            elif button_index == 1:
+                print("PLAY/PAUSE")
+                draw_media_controls('play')
+                time.sleep_ms(50)
+                draw_media_controls()
+            elif button_index == 2:
+                print("NEXT TRACK")
+                draw_media_controls('next')
+                time.sleep_ms(50)
+                draw_media_controls()
+
         # Handle right panel touches (buttons)
         if x >= SCREEN_WIDTH - 100:  # Button panel width is 100
             button_height = SCREEN_HEIGHT // 2 - 5
@@ -257,8 +344,7 @@ LED_PIN = 22    # Pin 8 on LCD
 # Initialize LED backlight with PWM
 led_pwm = PWM(Pin(LED_PIN))
 led_pwm.freq(1000)  # Set PWM frequency to 1kHz
-brightness = 65535  # Max brightness (16-bit PWM)
-led_pwm.duty_u16(brightness)
+led_pwm.duty_u16(65535)  # Start at max brightness
 
 # Initialize display pins
 sck = Pin(SPI_SCK, Pin.OUT)
@@ -305,6 +391,23 @@ i2c = I2C(0, sda=Pin(TOUCH_SDA), scl=Pin(TOUCH_SCL), freq=100000)
 # Initialize touch controller
 touch = FT6236(i2c, TOUCH_SDA, TOUCH_SCL)
 
+# Initialize rotary encoder
+print("Initializing rotary encoder...")
+ROT_CLK = 14
+ROT_DT = 15
+ROT_SW = 13
+
+encoder = RotaryEncoder(
+    clk_pin=ROT_CLK,
+    dt_pin=ROT_DT,
+    sw_pin=ROT_SW,
+    min_val=0,
+    max_val=65535,
+    step=4096,
+    value=65535,
+    debug=False  # Set to True to debug encoder issues
+)
+
 print("Starting UI test...")
 
 # Clear screen
@@ -323,5 +426,23 @@ draw_buttons()  # Draw initial buttons
 
 # Main loop
 while True:
+    # Handle touch events
     handle_touch()
-    time.sleep_ms(10)  # Small delay to prevent overwhelming the processor 
+    
+    # Handle rotary encoder
+    value_changed, button_pressed = encoder.read()
+    
+    if value_changed:
+        # Update PWM directly with encoder value
+        led_pwm.duty_u16(encoder.get_value())
+        print(f"Brightness: {encoder.get_value()}")
+    
+    if button_pressed:
+        # Toggle display on/off
+        if led_pwm.duty_u16() > 0:
+            led_pwm.duty_u16(0)  # Turn off
+        else:
+            led_pwm.duty_u16(encoder.get_value())  # Restore previous brightness
+        print(f"Display {'Off' if led_pwm.duty_u16() == 0 else 'On'}")
+    
+    time.sleep_ms(10)  # Small delay to prevent overwhelming the processor
