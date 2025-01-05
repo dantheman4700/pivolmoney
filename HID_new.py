@@ -308,10 +308,43 @@ class CustomHIDDevice:
 
     def send_data(self, data):
         """Send data to host"""
-        if len(data) > 8:
-            data = data[:8]  # Truncate to 8 bytes
-        self.in_buffer[:len(data)] = data
-        log(f"Sending data to host: {[hex(x) for x in self.in_buffer]}")
-        result = self.usb_dev.submit_xfer(self.in_endpoint, self.in_buffer)
-        log(f"Send result: {result}")
-        return result 
+        try:
+            if len(data) > 8:
+                data = data[:8]  # Truncate to 8 bytes
+            
+            # Check USB device state
+            if not self.usb_dev:
+                log("Error: USB device not initialized")
+                return False
+                
+            if not self.usb_dev.active():
+                log("Error: USB device not active")
+                return False
+                
+            if not self._device_configured:
+                log("Error: Device not configured")
+                return False
+                
+            log(f"USB state before send - Active: {self.usb_dev.active()}, Configured: {self._device_configured}")
+            self.in_buffer[:len(data)] = data
+            log(f"Sending data to host: {[hex(x) for x in self.in_buffer]}")
+            
+            # Try to submit transfer
+            try:
+                result = self.usb_dev.submit_xfer(self.in_endpoint, self.in_buffer)
+                log(f"Send result: {result}")
+                return result
+            except OSError as e:
+                log(f"OSError during submit_xfer: {e.args[0]}")
+                # Try to recover USB state
+                if e.args[0] == 16:  # Device busy
+                    log("Device busy, checking USB state...")
+                    if self.usb_dev.active():
+                        log("USB still active, might need reset")
+                    else:
+                        log("USB no longer active")
+                raise
+                
+        except Exception as e:
+            log(f"Error in send_data: {str(e)}")
+            return False 
