@@ -230,6 +230,7 @@ def main():
     icons_dir = "icons"
     if not os.path.exists(icons_dir):
         os.makedirs(icons_dir)
+        logging.info(f"Created icons directory: {icons_dir}")
     
     try:
         app_info = get_application_info()
@@ -249,12 +250,21 @@ def main():
             if app['icon_data']:
                 safe_name = "".join(x for x in app['name'] if x.isalnum())
                 icon_path = os.path.join(icons_dir, f"{safe_name}_{app['pid']}.png")
-                save_icon_to_file(app['icon_data'], icon_path)
+                try:
+                    save_icon_to_file(app['icon_data'], icon_path)
+                    logging.info(f"Successfully saved icon to: {icon_path}")
+                except Exception as e:
+                    logging.error(f"Failed to save icon for {app['name']}: {e}")
+            else:
+                logging.warning(f"No icon data available for {app['name']}")
         
         logging.info("\nIcons have been saved to the 'icons' directory")
             
     except KeyboardInterrupt:
         logging.info("\nTest stopped by user")
+    except Exception as e:
+        logging.error(f"Error in main: {e}")
 
 if __name__ == "__main__":
+    main() 
     main() 
