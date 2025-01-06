@@ -8,7 +8,69 @@ def log(msg):
     with open('hid.log', 'a') as f:
         f.write(str(msg) + '\n')
 
-class VolumeControlHID(HIDInterface):
+class MediaControlHID:
+    """Singleton class to manage HID media controls"""
+    _instance = None
+    
+    @staticmethod
+    def get_instance():
+        if MediaControlHID._instance is None:
+            MediaControlHID._instance = MediaControlHID()
+        return MediaControlHID._instance
+    
+    def __init__(self):
+        if MediaControlHID._instance is not None:
+            raise Exception("This class is a singleton! Use get_instance() instead.")
+        
+        self.hid = None
+        self.initialized = False
+    
+    def initialize(self):
+        """Initialize HID device"""
+        if self.initialized:
+            return True
+            
+        try:
+            self.hid = MediaHIDInterface()
+            usb.device.get().init(self.hid, builtin_driver=True)
+            
+            # Wait for device to be opened by host
+            timeout = 100  # 10 seconds timeout
+            while not self.hid.is_open() and timeout > 0:
+                time.sleep_ms(100)
+                timeout -= 1
+            
+            if timeout <= 0:
+                log("Timeout waiting for HID device to be opened")
+                return False
+                
+            self.initialized = True
+            log("HID device initialized successfully")
+            return True
+            
+        except Exception as e:
+            log(f"Error initializing HID device: {str(e)}")
+            return False
+    
+    def send_media_control(self, control, duration_ms=100):
+        """Send a media control command with automatic release"""
+        if not self.initialized or not self.hid:
+            return False
+            
+        try:
+            self.hid.send_control(control)
+            time.sleep_ms(duration_ms)
+            self.hid.send_control()  # Release
+            return True
+        except Exception as e:
+            log(f"Error sending media control: {str(e)}")
+            return False
+    
+    def is_ready(self):
+        """Check if HID device is initialized and ready"""
+        return self.initialized and self.hid and self.hid.is_open()
+
+class MediaHIDInterface(HIDInterface):
     # Control bit masks
     MUTE =        const(0b00000001)  # Bit 0
     VOL_UP =      const(0b00000010)  # Bit 1
@@ -19,13 +81,13 @@ class VolumeControlHID(HIDInterface):
 
     def __init__(self):
         """Initialize custom HID device"""
-        log("VolumeControlHID: Creating new instance")
+        log("MediaHIDInterface: Creating new instance")
         super().__init__(
             report_descriptor=self.REPORT_DESCRIPTOR,
             interface_str="MicroPython Media Control",
         )
         self._last_state = 0
-        log("VolumeControlHID: Instance created successfully")
+        log("MediaHIDInterface: Instance created successfully")
 
     def send_control(self, control=None):
         """Send media control command"""
@@ -63,38 +125,25 @@ class VolumeControlHID(HIDInterface):
         0xC0               # End Collection
     ])
 
+# Example usage in test function
 def test_media_controls():
-    # Create HID device
-    log("Creating HID device...")
-    device = VolumeControlHID()
+    media = MediaControlHID.get_instance()
+    if not media.initialize():
+        print("Failed to initialize HID device")
+        return
     
-    # Initialize USB device
-    log("Initializing USB device...")
-    usb.device.get().init(device, builtin_driver=True)
+    # Test controls
+    controls = [
+        (MediaHIDInterface.PLAY_PAUSE, "Play/Pause"),
+        (MediaHIDInterface.NEXT_TRACK, "Next Track"),
+        (MediaHIDInterface.PREV_TRACK, "Previous Track"),
+        (MediaHIDInterface.MUTE, "Mute")
+    ]
     
-    # Wait for device to be opened by host
-    while not device.is_open():
-        time.sleep_ms(100)
-    
-    log("Device opened by host, starting test...")
-    
-    while True:
-        # Test all controls
-        controls = [
-            (VolumeControlHID.VOL_UP, "Volume Up"),
-            (VolumeControlHID.VOL_DOWN, "Volume Down"),
-            (VolumeControlHID.MUTE, "Mute"),
-            (VolumeControlHID.PLAY_PAUSE, "Play/Pause"),
-            (VolumeControlHID.NEXT_TRACK, "Next Track"),
-            (VolumeControlHID.PREV_TRACK, "Previous Track")
-        ]
-        
-        for control, name in controls:
-            print(f"Testing {name}...")
-            device.send_control(control)
-            time.sleep_ms(100)
-            device.send_control()  # Release
-            time.sleep(1)
+    for control, name in controls:
+        print(f"Testing {name}...")
+        media.send_media_control(control)
+        time.sleep(1)
 
 if __name__ == "__main__":
     test_media_controls() 
