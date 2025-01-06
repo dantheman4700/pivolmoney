@@ -1,5 +1,5 @@
 import psutil
-from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume, IAudioSessionControl2, IMMDeviceEnumerator, EDataFlow, ERole
 import win32gui
 import win32ui
 import win32con
@@ -10,6 +10,8 @@ import logging
 import time
 import os
 import win32api
+from comtypes import CLSCTX_ALL, CoCreateInstance, CoInitialize, CoUninitialize
+import re
 
 # Custom filter to exclude COM pointer messages
 class NoPointerFilter(logging.Filter):
@@ -155,10 +157,95 @@ def find_process_windows(process_name):
     win32gui.EnumWindows(callback, None)
     return windows
 
+def parse_device_info(device_string):
+    """Parse the device string to get readable information"""
+    try:
+        # Try to extract the device name from the full path
+        if '\\' in device_string:
+            # Extract the executable name from the path
+            exe_match = re.search(r'\\([^\\]+\.exe)', device_string)
+            if exe_match:
+                exe_name = exe_match.group(1)
+            else:
+                exe_name = "Unknown"
+            
+            # Try to get the audio device GUID
+            guid_match = re.search(r'\{[\w-]+\}', device_string)
+            device_id = guid_match.group(0) if guid_match else "Unknown Device ID"
+            
+            return f"Audio Device {device_id} - {exe_name}"
+        return device_string
+    except Exception as e:
+        logging.debug(f"Error parsing device string: {e}")
+        return "Unknown Device"
+
+def get_device_name_from_id(device_id):
+    """Get friendly name of audio device from its ID"""
+    try:
+        devices = AudioUtilities.GetAllDevices()
+        for device in devices:
+            if device.id == device_id:
+                return device.FriendlyName
+        return "Unknown Device"
+    except Exception as e:
+        logging.debug(f"Error getting device name: {e}")
+        return "Unknown Device"
+
+def get_default_devices():
+    """Get the default audio devices"""
+    try:
+        CoInitialize()  # Initialize COM
+        
+        device_enumerator = CoCreateInstance(
+            IMMDeviceEnumerator._iid_, None, CLSCTX_ALL,
+            IMMDeviceEnumerator._iid_)
+        
+        try:
+            # Get default audio endpoint (Default Playback Device)
+            default_device = device_enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value)
+            default_id = default_device.GetId()
+            default_name = get_device_name_from_id(default_id)
+            
+            # Get default communications endpoint
+            default_comm_device = device_enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eCommunications.value)
+            default_comm_id = default_comm_device.GetId()
+            default_comm_name = get_device_name_from_id(default_comm_id)
+            
+            return {
+                'default': {'id': default_id, 'name': default_name},
+                'communications': {'id': default_comm_id, 'name': default_comm_name}
+            }
+        finally:
+            CoUninitialize()  # Clean up COM
+    except Exception as e:
+        logging.error(f"Error getting default devices: {e}")
+        return None
+
 def get_application_info():
     """Get information about all audio sessions including window icons"""
     sessions = AudioUtilities.GetAllSessions()
     app_info = []
+    
+    # Get default speakers
+    speakers = AudioUtilities.GetSpeakers()
+    default_device = "Default Audio Device"
+    comm_device = "Default Communications Device"
+    
+    # Get all audio devices
+    all_devices = AudioUtilities.GetAllDevices()
+    logging.info("\nAvailable Audio Devices:")
+    for device in all_devices:
+        try:
+            name = device.FriendlyName
+            if name:
+                logging.info(f"  {name}")
+                if "Astro MixAmp Pro Game" in name:
+                    default_device = name
+                elif "Astro MixAmp Pro Voice" in name:
+                    comm_device = name
+        except Exception as e:
+            logging.debug(f"Error getting device name: {e}")
+            continue
     
     for session in sessions:
         try:
@@ -172,9 +259,24 @@ def get_application_info():
                 pid = session.Process.pid
                 process = psutil.Process(pid)
                 
-                logging.info(f"\nLooking for windows for {process_name}")
+                # Get device info
+                try:
+                    # For now, we'll assume all audio is going through the default device
+                    # We can enhance this later to detect the actual device per session
+                    device_name = default_device
+                    
+                    # If it's a communication app, assume it's using the Pro Voice
+                    if process_name.lower() in ['discord.exe', 'slack.exe', 'teams.exe']:
+                        device_name = comm_device
+                    
+                except Exception as e:
+                    logging.debug(f"Error getting device name: {e}")
+                    device_name = "Unknown Device"
                 
-                # Find all windows for this process name
+                logging.info(f"\nLooking for windows for {process_name}")
+                logging.info(f"Device Name: {device_name}")
+                
+                # Rest of the existing window and icon handling code...
                 windows = find_process_windows(process_name)
                 
                 # Get icon if we found any windows
@@ -183,7 +285,6 @@ def get_application_info():
                 
                 if windows:
                     logging.info(f"Found {len(windows)} windows for {process_name}")
-                    # Try visible windows first
                     visible_windows = [w for w in windows if w[2]]
                     windows_to_try = visible_windows if visible_windows else windows
                     
@@ -205,7 +306,8 @@ def get_application_info():
                     "icon_data": icon_data,
                     "has_icon": icon_data is not None,
                     "window_title": window_title,
-                    "path": process.exe()
+                    "path": process.exe(),
+                    "device_name": device_name
                 }
                 
                 app_info.append(info)
@@ -233,32 +335,38 @@ def main():
         logging.info(f"Created icons directory: {icons_dir}")
     
     try:
-        app_info = get_application_info()
-        
-        logging.info(f"\nFound {len(app_info)} applications with audio sessions:")
-        for app in app_info:
-            logging.info(f"\nApplication: {app['name']}")
-            logging.info(f"  PID: {app['pid']}")
-            logging.info(f"  Volume: {app['volume']}%")
-            logging.info(f"  Muted: {app['muted']}")
-            logging.info(f"  Has Icon: {app['has_icon']}")
-            logging.info(f"  Icon Data Size: {len(app['icon_data']) if app['icon_data'] else 0} bytes")
-            logging.info(f"  Window Title: {app['window_title']}")
-            logging.info(f"  Path: {app['path']}")
+        CoInitialize()  # Initialize COM for the main thread
+        try:
+            app_info = get_application_info()
             
-            # Save icon if available
-            if app['icon_data']:
-                safe_name = "".join(x for x in app['name'] if x.isalnum())
-                icon_path = os.path.join(icons_dir, f"{safe_name}_{app['pid']}.png")
-                try:
-                    save_icon_to_file(app['icon_data'], icon_path)
-                    logging.info(f"Successfully saved icon to: {icon_path}")
-                except Exception as e:
-                    logging.error(f"Failed to save icon for {app['name']}: {e}")
-            else:
-                logging.warning(f"No icon data available for {app['name']}")
-        
-        logging.info("\nIcons have been saved to the 'icons' directory")
+            logging.info(f"\nFound {len(app_info)} applications with audio sessions:")
+            for app in app_info:
+                logging.info(f"\nApplication: {app['name']}")
+                logging.info(f"  PID: {app['pid']}")
+                logging.info(f"  Volume: {app['volume']}%")
+                logging.info(f"  Muted: {app['muted']}")
+                logging.info(f"  Has Icon: {app['has_icon']}")
+                logging.info(f"  Icon Data Size: {len(app['icon_data']) if app['icon_data'] else 0} bytes")
+                logging.info(f"  Window Title: {app['window_title']}")
+                logging.info(f"  Path: {app['path']}")
+                logging.info(f"  Device Name: {app['device_name']}")
+                
+                # Save icon if available
+                if app['icon_data']:
+                    safe_name = "".join(x for x in app['name'] if x.isalnum())
+                    icon_path = os.path.join(icons_dir, f"{safe_name}_{app['pid']}.png")
+                    try:
+                        with open(icon_path, 'wb') as f:
+                            f.write(app['icon_data'])
+                        logging.info(f"Successfully saved icon to: {icon_path}")
+                    except Exception as e:
+                        logging.error(f"Failed to save icon for {app['name']}: {e}")
+                else:
+                    logging.warning(f"No icon data available for {app['name']}")
+            
+            logging.info("\nIcons have been saved to the 'icons' directory")
+        finally:
+            CoUninitialize()  # Clean up COM
             
     except KeyboardInterrupt:
         logging.info("\nTest stopped by user")
@@ -266,5 +374,4 @@ def main():
         logging.error(f"Error in main: {e}")
 
 if __name__ == "__main__":
-    main() 
     main() 
