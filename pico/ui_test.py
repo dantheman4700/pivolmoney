@@ -74,16 +74,23 @@ def draw_app_list(selected_index=0):
     # Clear left panel
     display.fill_rect(0, 0, LEFT_PANEL_WIDTH, SCREEN_HEIGHT, BLACK)
     
-    # Calculate grid layout
+    # Draw Switch Device button at top
+    button_height = 30
+    button_width = LEFT_PANEL_WIDTH - 10
+    button_x = 5
+    button_y = 5
+    display.draw_button(button_x, button_y, button_width, button_height, "Switch Device", WHITE, DARK_GRAY)
+    
+    # Calculate grid layout - adjusted for Interface button
     usable_width = LEFT_PANEL_WIDTH - (GRID_COLS + 1) * ICON_SPACING
-    usable_height = SCREEN_HEIGHT - (GRID_ROWS + 1) * ICON_SPACING - 20  # Leave space for page number
+    usable_height = SCREEN_HEIGHT - (GRID_ROWS + 1) * ICON_SPACING - 40 - button_height  # Space for dots and button
     icon_width = usable_width // GRID_COLS
     icon_height = usable_height // GRID_ROWS
     ICON_SIZE = min(icon_width, icon_height)  # Keep icons square
     
-    # Calculate starting positions to center the grid
+    # Calculate starting positions to center the grid - moved down for Interface button
     start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
-    start_y = (SCREEN_HEIGHT - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING) - 20) // 2
+    start_y = button_height + 20 + (SCREEN_HEIGHT - button_height - 40 - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING)) // 2
     
     # Calculate page info
     items_per_page = GRID_COLS * GRID_ROWS
@@ -120,11 +127,19 @@ def draw_app_list(selected_index=0):
         text_x = x + (ICON_SIZE - text_width) // 2
         display.draw_text(text_x, y + ICON_SIZE + 2, text, text_color, None)
     
-    # Draw page number at bottom
-    page_text = f"Page {current_page + 1}/{total_pages}"
-    text_width = len(page_text) * 6
-    text_x = (LEFT_PANEL_WIDTH - text_width) // 2
-    display.draw_text(text_x, SCREEN_HEIGHT - 15, page_text, WHITE, None)
+    # Draw page indicator dots at bottom
+    dot_radius = 3
+    dot_spacing = 10
+    total_width = (total_pages * (dot_radius * 2 + dot_spacing)) - dot_spacing
+    start_x = (LEFT_PANEL_WIDTH - total_width) // 2
+    dot_y = SCREEN_HEIGHT - 15
+    
+    for i in range(total_pages):
+        dot_x = start_x + i * (dot_radius * 2 + dot_spacing)
+        if i == current_page:
+            display.fill_circle(dot_x + dot_radius, dot_y, dot_radius, WHITE)
+        else:
+            display.fill_circle(dot_x + dot_radius, dot_y, dot_radius, DARK_GRAY)
 
 def draw_right_panel(app_name, volume=75):
     print(f"Drawing right panel for app: {app_name}")
@@ -153,21 +168,25 @@ def draw_right_panel(app_name, volume=75):
 def draw_media_controls(highlight_button=None):
     """Draw media control buttons (Play/Pause, Next, Previous) in their own section"""
     info_panel_width = RIGHT_PANEL_WIDTH - 100  # Main info area width
-    media_section_height = 50  # Height of media control section
-    button_height = 40
+    media_section_height = 60  # Increased height for better visibility
+    button_height = 45  # Increased button height
     
     # Draw dividing line above media controls
     y_divider = SCREEN_HEIGHT - media_section_height
     display.draw_hline(LEFT_PANEL_WIDTH, y_divider, info_panel_width, WHITE)
     
     # Calculate button dimensions and positions
-    button_width = info_panel_width // 3  # Equal width for all three buttons
+    button_width = (info_panel_width - 40) // 3  # Equal width for all three buttons, with padding
     button_y = y_divider + (media_section_height - button_height) // 2  # Center buttons vertically
     
-    # Calculate x positions for buttons
-    prev_x = LEFT_PANEL_WIDTH
-    play_x = LEFT_PANEL_WIDTH + button_width
-    next_x = LEFT_PANEL_WIDTH + 2 * button_width
+    # Calculate x positions for buttons with spacing
+    spacing = 10
+    total_width = (button_width * 3) + (spacing * 2)
+    start_x = LEFT_PANEL_WIDTH + (info_panel_width - total_width) // 2
+    
+    prev_x = start_x
+    play_x = start_x + button_width + spacing
+    next_x = start_x + 2 * (button_width + spacing)
     
     # Draw Previous button
     if highlight_button == 'prev':
@@ -232,6 +251,16 @@ def handle_touch():
         last_y = y
         print(f"\nTouch detected at x: {x}, y: {y}")
         
+        # Handle Switch Device button press
+        button_height = 30
+        if x < LEFT_PANEL_WIDTH and y < button_height + 10:  # +10 for padding
+            print("SWITCH DEVICE PRESSED")
+            # Highlight button when pressed
+            display.draw_button(5, 5, LEFT_PANEL_WIDTH - 10, button_height, "Switch Device", BLACK, GRAY)
+            time.sleep_ms(100)  # Visual feedback
+            display.draw_button(5, 5, LEFT_PANEL_WIDTH - 10, button_height, "Switch Device", WHITE, DARK_GRAY)
+            return
+
         # Handle media control touches
         info_panel_width = RIGHT_PANEL_WIDTH - 100
         media_section_height = 50

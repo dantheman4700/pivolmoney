@@ -391,4 +391,30 @@ class ILI9488:
         
     def draw_vline(self, x, y, height, color):
         """Draw a vertical line"""
-        self.fill_rect(x, y, 1, height, color) 
+        self.fill_rect(x, y, 1, height, color)
+        
+    def fill_circle(self, x0, y0, radius, color):
+        """Draw a filled circle at (x0,y0) with given radius and color"""
+        x = radius
+        y = 0
+        err = 0
+        
+        # Convert color to RGB666 format if it's RGB565
+        if not isinstance(color, list):
+            r = ((color >> 11) & 0x1F) << 1
+            g = ((color >> 5) & 0x3F)
+            b = (color & 0x1F) << 1
+            color = [r, g, b]
+            
+        while x >= y:
+            self.fill_rect(x0 - x, y0 + y, 2*x + 1, 1, color)
+            self.fill_rect(x0 - x, y0 - y, 2*x + 1, 1, color)
+            self.fill_rect(x0 - y, y0 + x, 2*y + 1, 1, color)
+            self.fill_rect(x0 - y, y0 - x, 2*y + 1, 1, color)
+            
+            y += 1
+            err += 1 + 2*y
+            if 2*(err-x) + 1 > 0:
+                x -= 1
+                err += 1 - 2*x
+ 

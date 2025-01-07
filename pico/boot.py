@@ -6,11 +6,4 @@ import os
 try:
     os.mount(machine.Flash(), "/")
 except:
-    print("Filesystem already mounted")
-
-# Configure CPU frequency
-machine.freq(125_000_000)  # Set CPU frequency
-
-# Create a flag file to indicate successful boot
-with open("boot_complete.txt", "w") as f:
-    f.write("Boot completed") 
+    print("Filesystem already mounted") 

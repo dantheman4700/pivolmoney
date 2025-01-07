@@ -2,6 +2,7 @@
 /reference_code/
 /old_code/
 old_code/
+/pc/venv/
 # Python
 __pycache__/
 *.py[cod]
