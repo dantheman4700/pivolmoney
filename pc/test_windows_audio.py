@@ -75,18 +75,18 @@ def get_window_icon(hwnd):
                     # Create memory DC
                     memdc = win32gui.CreateCompatibleDC(hdc)
                     
-                    # Create bitmap
-                    hbmp = win32gui.CreateCompatibleBitmap(hdc, 32, 32)
+                    # Create bitmap (increased to 60x60)
+                    hbmp = win32gui.CreateCompatibleBitmap(hdc, 60, 60)
                     
                     # Select bitmap into DC
                     old_bitmap = win32gui.SelectObject(memdc, hbmp)
                     
                     # Fill background with white
                     brush = win32gui.CreateSolidBrush(win32api.RGB(255, 255, 255))
-                    win32gui.FillRect(memdc, (0, 0, 32, 32), brush)
+                    win32gui.FillRect(memdc, (0, 0, 60, 60), brush)
                     
-                    # Draw the icon
-                    win32gui.DrawIconEx(memdc, 0, 0, hicon, 32, 32, 0, None, win32con.DI_NORMAL)
+                    # Draw the icon (increased to 60x60)
+                    win32gui.DrawIconEx(memdc, 0, 0, hicon, 60, 60, 0, None, win32con.DI_NORMAL)
                     
                     # Get bitmap bits using win32ui
                     bmp = win32ui.CreateBitmapFromHandle(hbmp)
@@ -95,21 +95,13 @@ def get_window_icon(hwnd):
                     # Convert to PIL Image
                     img = Image.frombuffer(
                         'RGBA',
-                        (32, 32),
+                        (60, 60),  # Updated size
                         bmpstr,
                         'raw',
                         'BGRA',
                         0,
                         1
                     )
-                    
-                    # Clean up
-                    win32gui.SelectObject(memdc, old_bitmap)
-                    win32gui.DeleteObject(hbmp)
-                    win32gui.DeleteObject(brush)
-                    win32gui.DeleteDC(memdc)
-                    win32gui.ReleaseDC(0, hdc)
-                    win32gui.DestroyIcon(hicon)
                     
                     # Convert to PNG bytes
                     img_byte_arr = io.BytesIO()
