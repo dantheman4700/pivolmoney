@@ -5,157 +5,139 @@ import win32api
 import win32process
 from PIL import Image
 import io
-import logging
-import base64
-import psutil
 import struct
+
+def rgb_to_rgb565(r, g, b):
+    """Convert RGB888 to RGB565"""
+    r = (r >> 3) & 0x1F
+    g = (g >> 2) & 0x3F
+    b = (b >> 3) & 0x1F
+    return (r << 11) | (g << 5) | b
 
 class IconHandler:
     def __init__(self):
-        self.icon_cache = {}  # Cache icons by process name and pid
-        self.ICON_SIZE = 60  # Match UI grid size
+        self.icon_cache = {}  # Cache for storing icons
+        self.icon_size = (48, 48)  # Changed to 48x48 square icons
         
-    def get_icon_for_app(self, process_name, pid=None):
-        """Get icon for an application by process name and optional pid"""
-        cache_key = f"{process_name}_{pid}" if pid else process_name
+    def clear_cache(self):
+        """Clear the icon cache"""
+        self.icon_cache = {}
+        
+    def get_icon_for_app(self, process_name, pid):
+        """Get icon for an app, using cache if available"""
+        cache_key = f"{process_name}_{pid}"
         
         # Check cache first
         if cache_key in self.icon_cache:
             return self.icon_cache[cache_key]
             
-        # Find windows for this process
-        windows = self.find_process_windows(process_name)
-        icon_data = None
-        
-        for hwnd, _, is_visible in windows:
-            if icon_data := self.get_window_icon(hwnd):
-                self.icon_cache[cache_key] = icon_data
-                return icon_data
-                
-        return None
-        
-    def find_process_windows(self, process_name):
-        """Find all windows belonging to a process"""
-        windows = []
-        target_name = process_name.lower().replace('.exe', '')
-        
-        def callback(hwnd, _):
-            if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
-                try:
-                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                    process = psutil.Process(pid)
-                    if process.name().lower().replace('.exe', '') == target_name:
-                        title = win32gui.GetWindowText(hwnd)
-                        if title and not title.startswith("Default IME"):
-                            windows.append((hwnd, title, True))
-                except:
-                    pass
+        # Try to find window handle for the process
+        def callback(hwnd, hwnds):
+            if win32gui.IsWindowVisible(hwnd) and win32gui.IsWindowEnabled(hwnd):
+                _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
+                if found_pid == pid:
+                    hwnds.append(hwnd)
             return True
             
-        win32gui.EnumWindows(callback, None)
-        return windows
-        
-    def rgb_to_rgb565(self, r, g, b, a):
-        """Convert RGBA to RGB565 format with alpha handling"""
-        if a < 128:  # If mostly transparent
-            return 0x39E7  # Use dark gray for transparent pixels
+        hwnds = []
+        try:
+            win32gui.EnumWindows(callback, hwnds)
+        except:
+            pass
             
-        # Convert to 5/6/5 format
-        r = (r >> 3) & 0x1F
-        g = (g >> 2) & 0x3F
-        b = (b >> 3) & 0x1F
-        
-        # Combine into 16-bit value
-        return (r << 11) | (g << 5) | b
+        # Try to get icon from any window found
+        icon_data = None
+        for hwnd in hwnds:
+            icon_data = self.get_window_icon(hwnd)
+            if icon_data:
+                break
+                
+        # If no icon found, use default
+        if not icon_data:
+            icon_data = self.get_default_icon()
+            
+        # Cache the icon
+        if icon_data:
+            self.icon_cache[cache_key] = icon_data
+            
+        return icon_data
         
     def get_window_icon(self, hwnd):
-        """Get icon for a window handle and convert to RGB565 format"""
+        """Get window icon in RGB565 format"""
         try:
-            if not win32gui.IsWindow(hwnd):
+            # Try to get the icon handle
+            icon_handle = win32gui.SendMessage(hwnd, win32con.WM_GETICON, win32con.ICON_BIG, 0)
+            if not icon_handle:
+                icon_handle = win32gui.GetClassLong(hwnd, win32con.GCL_HICON)
+            
+            if not icon_handle:
+                print(f"No icon handle found for window {hwnd}")
                 return None
                 
-            # Try to get icon from window class first
-            hicon = win32gui.SendMessage(hwnd, win32con.WM_GETICON, win32con.ICON_BIG, 0)
-            if not hicon:
-                hicon = win32gui.GetClassLong(hwnd, win32con.GCL_HICON)
-            if not hicon:
-                hicon = win32gui.SendMessage(hwnd, win32con.WM_GETICON, win32con.ICON_SMALL, 0)
-            if not hicon:
-                hicon = win32gui.GetClassLong(hwnd, win32con.GCL_HICONSM)
+            # Extract icon
+            icon = win32gui.DestroyIcon(win32api.CopyIcon(icon_handle))
+            if not icon:
+                print(f"Failed to copy icon for window {hwnd}")
+                return None
                 
-            if hicon:
-                try:
-                    # Get screen DC
-                    hdc = win32gui.GetDC(0)
-                    
-                    # Create memory DC
-                    memdc = win32gui.CreateCompatibleDC(hdc)
-                    
-                    # Create bitmap (60x60 for Pico display)
-                    hbmp = win32gui.CreateCompatibleBitmap(hdc, self.ICON_SIZE, self.ICON_SIZE)
-                    
-                    # Select bitmap into DC
-                    old_bitmap = win32gui.SelectObject(memdc, hbmp)
-                    
-                    # Fill background with white
-                    brush = win32gui.CreateSolidBrush(win32api.RGB(255, 255, 255))
-                    win32gui.FillRect(memdc, (0, 0, self.ICON_SIZE, self.ICON_SIZE), brush)
-                    
-                    # Draw the icon
-                    win32gui.DrawIconEx(memdc, 0, 0, hicon, self.ICON_SIZE, self.ICON_SIZE, 0, None, win32con.DI_NORMAL)
-                    
-                    # Get bitmap bits
-                    bmp = win32ui.CreateBitmapFromHandle(hbmp)
-                    bmpstr = bmp.GetBitmapBits(True)
-                    
-                    # Convert to PIL Image
-                    img = Image.frombuffer(
-                        'RGBA',
-                        (self.ICON_SIZE, self.ICON_SIZE),
-                        bmpstr,
-                        'raw',
-                        'BGRA',
-                        0,
-                        1
-                    )
-                    
-                    # Convert to RGB565 format
-                    rgb565_data = bytearray(self.ICON_SIZE * self.ICON_SIZE * 2)  # 2 bytes per pixel
-                    pixels = img.load()
-                    
-                    for y in range(self.ICON_SIZE):
-                        for x in range(self.ICON_SIZE):
-                            r, g, b, a = pixels[x, y]
-                            rgb565 = self.rgb_to_rgb565(r, g, b, a)
-                            # Store in big-endian format
-                            idx = (y * self.ICON_SIZE + x) * 2
-                            rgb565_data[idx] = (rgb565 >> 8) & 0xFF
-                            rgb565_data[idx + 1] = rgb565 & 0xFF
-                    
-                    # Convert to base64
-                    base64_str = base64.b64encode(rgb565_data).decode('utf-8')
-                    
-                    # Clean up
-                    win32gui.SelectObject(memdc, old_bitmap)
-                    win32gui.DeleteObject(hbmp)
-                    win32gui.DeleteObject(brush)
-                    win32gui.DeleteDC(memdc)
-                    win32gui.ReleaseDC(0, hdc)
-                    win32gui.DestroyIcon(hicon)
-                    
-                    return base64_str
-                    
-                except Exception as e:
-                    logging.error(f"Error converting icon: {e}")
-                    try:
-                        win32gui.DestroyIcon(hicon)
-                    except:
-                        pass
-                    
+            # Convert to bitmap
+            hdc = win32ui.CreateDCFromHandle(win32gui.GetDC(0))
+            hbmp = win32ui.CreateBitmap()
+            hbmp.CreateCompatibleBitmap(hdc, self.icon_size[0], self.icon_size[1])
+            hdc = hdc.CreateCompatibleDC()
+            hdc.SelectObject(hbmp)
+            hdc.DrawIcon((0, 0), icon)
+            
+            # Convert to PIL Image
+            bmpstr = hbmp.GetBitmapBits(True)
+            img = Image.frombuffer('RGBA', self.icon_size, bmpstr, 'raw', 'BGRA', 0, 1)
+            
+            # Convert to RGB565
+            rgb565_data = bytearray(self.icon_size[0] * self.icon_size[1] * 2)  # 2 bytes per pixel
+            pixels = img.convert('RGB').load()
+            for y in range(self.icon_size[1]):
+                for x in range(self.icon_size[0]):
+                    r, g, b = pixels[x, y]
+                    rgb565 = rgb_to_rgb565(r, g, b)
+                    idx = (y * self.icon_size[0] + x) * 2
+                    rgb565_data[idx] = (rgb565 >> 8) & 0xFF
+                    rgb565_data[idx + 1] = rgb565 & 0xFF
+            
+            print(f"Successfully extracted icon for window {hwnd}")
+            return rgb565_data
+            
         except Exception as e:
-            logging.error(f"Could not get icon: {e}")
-        return None
-        
-    def clear_cache(self):
-        """Clear the icon cache"""
-        self.icon_cache.clear()
+            print(f"Error getting icon for window {hwnd}: {str(e)}")
+            return None
+            
+    def get_default_icon(self):
+        """Generate a default icon when window icon cannot be retrieved"""
+        try:
+            # Create a simple default icon (gray square with white border)
+            img = Image.new('RGB', self.icon_size, (128, 128, 128))
+            pixels = img.load()
+            
+            # Add white border
+            for x in range(self.icon_size[0]):
+                pixels[x, 0] = (255, 255, 255)
+                pixels[x, self.icon_size[1]-1] = (255, 255, 255)
+            for y in range(self.icon_size[1]):
+                pixels[0, y] = (255, 255, 255)
+                pixels[self.icon_size[0]-1, y] = (255, 255, 255)
+                
+            # Convert to RGB565
+            rgb565_data = bytearray(self.icon_size[0] * self.icon_size[1] * 2)
+            for y in range(self.icon_size[1]):
+                for x in range(self.icon_size[0]):
+                    r, g, b = pixels[x, y]
+                    rgb565 = rgb_to_rgb565(r, g, b)
+                    idx = (y * self.icon_size[0] + x) * 2
+                    rgb565_data[idx] = (rgb565 >> 8) & 0xFF
+                    rgb565_data[idx + 1] = rgb565 & 0xFF
+                    
+            print("Generated default icon successfully")
+            return rgb565_data
+            
+        except Exception as e:
+            print(f"Error creating default icon: {str(e)}")
+            return None
