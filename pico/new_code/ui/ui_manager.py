@@ -521,13 +521,14 @@ class UIManager:
         
     def update(self):
         """Update the UI state"""
-        if self.display:
-            self.display.update()
-            
+        # Handle any touch events
+        self.handle_touch()
+        
     def cleanup(self):
         """Cleanup UI resources"""
         try:
-            if self.display:
-                self.display.cleanup()
+            # Turn off display backlight
+            if self.led_pwm:
+                self.led_pwm.duty_u16(0)
         except Exception as e:
             self.logger.error(f"UI cleanup error: {str(e)}")
