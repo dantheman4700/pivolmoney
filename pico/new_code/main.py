@@ -56,7 +56,6 @@ def handle_media_control(action):
     logger.info(f"Media control action: {action}")
     if comm_manager and comm_manager.media_control:
         try:
-            logger.debug(f"HID interface ready: {comm_manager.media_control.is_ready()}")
             if action == 'play':
                 success = comm_manager.media_control.send_media_control(MediaHIDInterface.PLAY_PAUSE)
                 logger.info(f"PLAY_PAUSE command {'sent' if success else 'failed'}")
@@ -72,9 +71,6 @@ def handle_media_control(action):
             return success
         except Exception as e:
             logger.error(f"Error in media control: {str(e)}")
-            logger.error(f"HID state - initialized: {comm_manager.media_control.initialized}, hid: {comm_manager.media_control.hid is not None}")
-    else:
-        logger.error("Media control not available - comm_manager or media_control is None")
     return False
 
 def handle_touch(action, app_name=None):

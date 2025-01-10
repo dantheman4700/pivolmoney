@@ -111,83 +111,114 @@ class VolumeMonitor:
             return False
             
         try:
-            # Send the JSON message in chunks
+            # Send the JSON message
             message = json.dumps(data) + '\n'
-            bytes_to_write = message.encode()
-            chunk_size = 32  # Match Pico's chunk size
-            
-            for i in range(0, len(bytes_to_write), chunk_size):
-                chunk = bytes_to_write[i:i + chunk_size]
-                retries = 3
-                while retries > 0:
-                    try:
-                        bytes_written = self.serial.write(chunk)
-                        if bytes_written > 0:
-                            break
-                        retries -= 1
-                        time.sleep(0.01)
-                    except Exception as e:
-                        retries -= 1
-                        time.sleep(0.01)
-                        if retries == 0:
-                            print(f"Failed to send chunk after retries: {str(e)}")
-                            self.disconnect()
-                            return False
-                self.serial.flush()
+            self.serial.write(message.encode())
+            self.serial.flush()
             
             if icon_data:
                 current_time = time.time()
                 if current_time - self.last_icon_send < self.icon_send_timeout:
                     time.sleep(self.icon_send_timeout - (current_time - self.last_icon_send))
                 
+                # Verify icon data size
+                if len(icon_data) != 4608:  # 48x48x2 bytes
+                    print(f"Invalid icon data size: {len(icon_data)} bytes")
+                    return False
+                
                 # Log the message and icon data size
                 print(f"Sent message before icon: {message.strip()}")
                 print(f"Icon data size for {data.get('app', 'unknown')}: {len(icon_data)} bytes")
                 
-                # Wait for message to be processed
-                time.sleep(0.1)
+                # Wait for ready_for_icon response or icon_parsed (in case it was already processed)
+                start_time = time.time()
+                ready_received = False
+                icon_parsed = False
                 
-                # Send icon data with STX marker and in chunks
-                self.serial.write(b'\x02')
-                self.serial.flush()
-                
-                # Ensure icon_data is bytes
-                if isinstance(icon_data, str):
-                    icon_data = icon_data.encode('utf-8')
-                elif not isinstance(icon_data, bytes):
-                    icon_data = str(icon_data).encode('utf-8')
-                
-                # Send icon data in smaller chunks with retries
-                for i in range(0, len(icon_data), chunk_size):
-                    chunk = icon_data[i:i + chunk_size]
-                    retries = 3
-                    while retries > 0:
+                while time.time() - start_time < 5:  # 5 second timeout
+                    if self.serial.in_waiting:
                         try:
-                            bytes_written = self.serial.write(chunk)
-                            if bytes_written > 0:
-                                break
-                            retries -= 1
-                            time.sleep(0.01)
+                            line = self.serial.readline().decode().strip()
+                            if line:
+                                print(f"Received while waiting for ready_for_icon: {line}")
+                                response = json.loads(line)
+                                
+                                # Check for icon_parsed first
+                                if (response.get("type") == "icon_parsed" and 
+                                    response.get("app") == data.get("app")):
+                                    if response.get("status") == "ok":
+                                        print(f"Icon already processed for {data.get('app')}")
+                                        self.last_icon_send = time.time()
+                                        self.sent_icons.add(data.get("app"))
+                                        return True
+                                    else:
+                                        print(f"Icon parsing failed for {data.get('app')}: {response.get('error', 'Unknown error')}")
+                                        return False
+                                        
+                                # Then check for ready_for_icon
+                                elif (response.get("type") == "ready_for_icon" and 
+                                      response.get("app") == data.get("app")):
+                                    ready_received = True
+                                    break
+                                    
                         except Exception as e:
-                            retries -= 1
-                            time.sleep(0.01)
-                            if retries == 0:
-                                print(f"Failed to send icon chunk after retries: {str(e)}")
-                                self.disconnect()
-                                return False
+                            print(f"Error reading ready_for_icon response: {e}")
+                    time.sleep(0.1)
+                
+                if not ready_received:
+                    print(f"Timeout waiting for ready_for_icon for {data.get('app')}")
+                    return False
+                
+                # Send icon data using base64 encoding
+                try:
+                    import base64
+                    # Convert binary data to base64
+                    b64_data = base64.b64encode(bytes(icon_data)).decode('ascii')
+                    
+                    # Send as JSON message
+                    icon_message = {
+                        "type": "icon_data_b64",
+                        "app": data.get("app"),
+                        "data": b64_data
+                    }
+                    message = json.dumps(icon_message) + '\n'
+                    self.serial.write(message.encode())
                     self.serial.flush()
-                    time.sleep(0.01)
-                
-                self.serial.write(b'\n')
-                self.serial.flush()
-                print(f"Finished sending icon data for: {data.get('app', 'unknown')}")
-                self.last_icon_send = time.time()
-                
+                    
+                    print(f"Sent base64 icon data for: {data.get('app', 'unknown')}")
+                    
+                    # Wait for icon_parsed confirmation
+                    parse_start = time.time()
+                    while time.time() - parse_start < 15:  # 15 second timeout
+                        if self.serial.in_waiting:
+                            try:
+                                line = self.serial.readline().decode().strip()
+                                if line:
+                                    print(f"Received while waiting for icon_parsed: {line}")
+                                    response = json.loads(line)
+                                    if (response.get("type") == "icon_parsed" and 
+                                        response.get("app") == data.get("app")):
+                                        if response.get("status") == "ok":
+                                            print(f"Icon successfully parsed for {data.get('app')}")
+                                            self.last_icon_send = time.time()
+                                            self.sent_icons.add(data.get("app"))
+                                            return True
+                                        else:
+                                            print(f"Icon parsing failed for {data.get('app')}: {response.get('error', 'Unknown error')}")
+                                            return False
+                            except Exception as e:
+                                print(f"Error reading icon_parsed response: {e}")
+                        time.sleep(0.1)
+                    print(f"Timeout waiting for icon_parsed for {data.get('app')} after 15 seconds")
+                    return False
+                    
+                except Exception as e:
+                    print(f"Error sending icon data: {e}")
+                    return False
             else:
                 print(f"Sent: {message.strip()}")
-            
-            return True
-            
+                return True
+                
         except Exception as e:
             print(f"Failed to send message: {e}")
             self.disconnect()
@@ -198,6 +229,7 @@ class VolumeMonitor:
         sessions = AudioUtilities.GetAllSessions()
         app_volumes = []
         icons_to_send = []
+        seen_apps = set()  # Track unique apps
         
         for session in sessions:
             try:
@@ -205,6 +237,11 @@ class VolumeMonitor:
                     volume = session.SimpleAudioVolume
                     process_name = session.Process.name()
                     pid = session.Process.pid
+                    
+                    # Skip if we've already processed this app
+                    if process_name in seen_apps:
+                        continue
+                    seen_apps.add(process_name)
                     
                     # Get icon data
                     icon_data = self.icon_handler.get_icon_for_app(process_name, pid)
@@ -252,6 +289,7 @@ class VolumeMonitor:
                         
                     # Skip if we've already sent this icon
                     if icon_data["name"] in self.sent_icons:
+                        print(f"Skipping already sent icon for {icon_data['name']}")
                         continue
                         
                     success = self.send_message({
@@ -260,12 +298,13 @@ class VolumeMonitor:
                     }, icon_data["icon"])
                     
                     if success:
+                        print(f"Successfully sent icon for {icon_data['name']}")
                         self.sent_icons.add(icon_data["name"])
                     else:
                         print(f"Failed to send icon for {icon_data['name']}")
                         break
                     
-                    time.sleep(0.5)
+                    time.sleep(0.5)  # Small delay between icons
                     
                 # Send initialization complete message
                 self.send_message({
@@ -441,44 +480,25 @@ class VolumeMonitor:
                                     if not icon.get("icon"):
                                         continue
                                         
-                                    # Send icon metadata
-                                    if not self.send_message({
+                                    # Skip if we've already sent this icon
+                                    if icon["name"] in self.sent_icons:
+                                        print(f"Skipping already sent icon for {icon['name']}")
+                                        continue
+                                        
+                                    success = self.send_message({
                                         "type": "icon_data",
                                         "app": icon["name"]
-                                    }):
-                                        print(f"Failed to send icon metadata for {icon['name']}")
-                                        self.disconnect()
-                                        return False
-                                        
-                                    # Wait for ready_for_icon
-                                    ready_start = time.time()
-                                    while time.time() - ready_start < 5:
-                                        if self.serial.in_waiting:
-                                            try:
-                                                line = self.serial.readline().decode().strip()
-                                                if line:
-                                                    data = json.loads(line)
-                                                    if (data.get("type") == "ready_for_icon" and 
-                                                        data.get("app") == icon["name"]):
-                                                        # Send icon data
-                                                        if not self.send_message({
-                                                            "type": "icon_data",
-                                                            "app": icon["name"]
-                                                        }, icon["icon"]):
-                                                            print(f"Failed to send icon data for {icon['name']}")
-                                                            self.disconnect()
-                                                            return False
-                                                        self.sent_icons.add(icon["name"])
-                                                        break
-                                            except Exception as e:
-                                                print(f"Error processing ready_for_icon: {e}")
-                                        time.sleep(0.1)
+                                    }, icon["icon"])
+                                    
+                                    if success:
+                                        print(f"Successfully sent icon for {icon['name']}")
+                                        self.sent_icons.add(icon["name"])
                                     else:
-                                        print(f"Timeout waiting for ready_for_icon for {icon['name']}")
+                                        print(f"Failed to send icon for {icon['name']}")
                                         self.disconnect()
                                         return False
                                         
-                                    time.sleep(0.5)  # Delay between icons
+                                    time.sleep(1.0)  # Delay between icons
                                     
                                 # Send init complete
                                 if not self.send_message({"type": "init_complete"}):
