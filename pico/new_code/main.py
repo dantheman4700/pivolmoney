@@ -56,6 +56,7 @@ def handle_media_control(action):
     logger.info(f"Media control action: {action}")
     if comm_manager and comm_manager.media_control:
         try:
+            logger.debug(f"HID interface ready: {comm_manager.media_control.is_ready()}")
             if action == 'play':
                 success = comm_manager.media_control.send_media_control(MediaHIDInterface.PLAY_PAUSE)
                 logger.info(f"PLAY_PAUSE command {'sent' if success else 'failed'}")
@@ -71,28 +72,19 @@ def handle_media_control(action):
             return success
         except Exception as e:
             logger.error(f"Error in media control: {str(e)}")
+            logger.error(f"HID state - initialized: {comm_manager.media_control.initialized}, hid: {comm_manager.media_control.hid is not None}")
+    else:
+        logger.error("Media control not available - comm_manager or media_control is None")
     return False
 
-def handle_touch(x, y, action=None):
+def handle_touch(action, app_name=None):
     """Handle touch events"""
-    if ui_manager:
-        # Match the layout from ui_test.py
-        side_width = 100
-        center_width = DISPLAY_WIDTH - (2 * side_width)
-        center_height = DISPLAY_HEIGHT // 2
-        
-        if action:
-            handle_media_control(action)
-        else:
-            if x < side_width:  # Previous button
-                handle_media_control('prev')
-            elif x >= DISPLAY_WIDTH - side_width:  # Next button
-                handle_media_control('next')
-            elif side_width <= x < DISPLAY_WIDTH - side_width:
-                if y < center_height:  # Mute button
-                    handle_media_control('mute')
-                else:  # Play button
-                    handle_media_control('play')
+    if action in ['play', 'prev', 'next', 'mute']:
+        handle_media_control(action)
+    elif action == 'app_selected' and app_name:
+        logger.info(f"App selected: {app_name}")
+        # Handle app selection
+        pass
 
 def main():
     global ui_manager, comm_manager
@@ -110,9 +102,6 @@ def main():
             logger.error("Failed to initialize UI")
             raise Exception("UI initialization failed")
         
-        # Set initial state to simple media
-        ui_manager.set_state(UIState.SIMPLE_MEDIA)
-        
         # Initialize communication manager
         comm_manager = CommunicationManager()
         if not comm_manager.initialize():
@@ -121,6 +110,9 @@ def main():
         
         # Register touch callback
         ui_manager.register_touch_callback(handle_touch)
+        
+        # Set initial state to simple media after everything is initialized
+        ui_manager.set_state(UIState.SIMPLE_MEDIA)
         
         logger.info("Hardware initialized - starting main loop")
         

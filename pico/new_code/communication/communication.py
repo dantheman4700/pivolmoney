@@ -29,6 +29,8 @@ class CommunicationManager:
         self.last_heartbeat = time.ticks_ms()
         self.poll = select.poll()
         self.poll.register(sys.stdin, select.POLLIN)
+        self.expected_icons = 0  # Track how many icons we expect
+        self.received_icons = 0  # Track how many icons we've received
         
     def initialize(self):
         """Initialize communication interfaces"""
@@ -82,12 +84,46 @@ class CommunicationManager:
                         break
                     
                 try:
-                    # Convert to string and validate JSON
+                    # Convert to string
                     line_str = line.decode().strip()
-                    if line_str:
+                    if not line_str:
+                        return None
+                        
+                    # Handle icon data
+                    if self.receiving_icon:
+                        if line_str.startswith('\x02'):  # STX marker
+                            # Skip the STX marker
+                            pass
+                        elif line_str == '\n':  # End of icon data
+                            self.receiving_icon = False
+                            if self.current_icon_app and self.current_icon_app in self.apps:
+                                self.apps[self.current_icon_app]["icon"] = bytes(self.current_icon_data)
+                                self.logger.info(f"Icon data received for {self.current_icon_app}")
+                                self.received_icons += 1  # Increment received icons counter
+                                self.logger.info(f"Received {self.received_icons}/{self.expected_icons} icons")
+                            self.current_icon_data = bytearray()
+                            self.current_icon_app = None
+                        else:
+                            # Accumulate raw binary data
+                            self.current_icon_data.extend(line)
+                        return None
+                        
+                    # Try to parse as JSON for normal messages
+                    try:
                         data = json.loads(line_str)
                         self.logger.info(f"Valid message received: {line_str}")
+                        if data.get("type") == "icon_data":
+                            # Start receiving icon data
+                            self.receiving_icon = True
+                            self.current_icon_data = bytearray()
+                            self.current_icon_app = data.get("app")
                         return line_str
+                    except json.JSONDecodeError:
+                        if line_str.startswith('\x02'):  # STX marker
+                            self.receiving_icon = True
+                            self.current_icon_data = bytearray()
+                        else:
+                            self.logger.error("Invalid JSON message")
                 except Exception as e:
                     self.logger.error(f"Invalid message: {str(e)}")
             
@@ -106,8 +142,7 @@ class CommunicationManager:
         
         try:
             message = json.dumps(data) + '\n'
-            sys.stdout.write(message)
-            sys.stdout.flush()
+            print(message, end='')  # Use print instead of sys.stdout for REPL
             self.logger.debug(f"Sent message: {message.strip()}")
             return True
             
@@ -131,7 +166,10 @@ class CommunicationManager:
                     self.logger.info("Test response sent successfully")
                     # After successful handshake, request initial config
                     time.sleep_ms(100)  # Small delay before requesting config
-                    if self.send_message({"type": "request_initial_config"}):
+                    config_request = {
+                        "type": "request_initial_config"
+                    }
+                    if self.send_message(config_request):
                         self.logger.info("Initial config requested")
                         self.connected = True
                     else:
@@ -140,21 +178,29 @@ class CommunicationManager:
                     self.logger.error("Failed to send test response")
                 
             elif msg_type == "initial_config":
-                old_count = len(self.apps)
+                self.logger.info("Received initial config")
                 try:
-                    # Store basic app info
+                    # Store basic app info and count expected icons
                     new_apps = {}
+                    self.expected_icons = 0
                     for app in data.get("data", []):
                         app_name = app.get("name")
                         if app_name:
                             new_apps[app_name] = app
+                            if app.get("has_icon", False):
+                                self.expected_icons += 1
                     self.apps = new_apps
-                    self.logger.info(f"Initial config received: {old_count} -> {len(self.apps)} apps")
+                    self.received_icons = 0  # Reset received icons counter
+                    self.logger.info(f"Processed {len(self.apps)} apps from initial config, expecting {self.expected_icons} icons")
+                    
                     # Send confirmation
-                    self.send_message({
+                    confirm = {
                         "type": "config_received",
                         "status": "ok"
-                    })
+                    }
+                    if not self.send_message(confirm):
+                        self.logger.error("Failed to send config confirmation")
+                        
                 except Exception as e:
                     self.logger.error(f"Error processing initial config: {str(e)}")
                     
@@ -164,20 +210,38 @@ class CommunicationManager:
                     self.current_icon_app = app_name
                     self.logger.info(f"Expecting icon data for {app_name}")
                     # Send confirmation that we're ready for icon
-                    self.send_message({
+                    ready = {
                         "type": "ready_for_icon",
                         "app": app_name
-                    })
+                    }
+                    self.send_message(ready)
                 else:
                     self.logger.warning(f"Received icon data for unknown app: {app_name}")
                     
             elif msg_type == "init_complete":
                 self.logger.info("Initialization complete")
-                if self.send_message({"type": "ready", "status": "ok"}):
-                    self.protocol_initialized = True
-                    self.logger.info("Ready for updates")
+                # Only switch to full UI if we've received all expected icons
+                if self.received_icons == self.expected_icons:
+                    # Switch to full UI mode
+                    from core.config import UIState
+                    from ui.ui_manager import UIManager
+                    ui_manager = UIManager.get_instance()
+                    if ui_manager:
+                        ui_manager.set_state(UIState.FULL_UI)
+                        self.logger.info("Switched to full UI mode")
+                    
+                    # Send ready message
+                    ready = {
+                        "type": "ready",
+                        "status": "ok"
+                    }
+                    if self.send_message(ready):
+                        self.protocol_initialized = True
+                        self.logger.info("Ready for updates")
+                    else:
+                        self.logger.error("Failed to send ready response")
                 else:
-                    self.logger.error("Failed to send ready response")
+                    self.logger.warning(f"Not all icons received: {self.received_icons}/{self.expected_icons}")
                 
         except Exception as e:
             self.logger.error(f"Handle message error: {str(e)}")

@@ -14,7 +14,16 @@ from drivers.ili9488 import ILI9488
 from drivers.ft6236 import FT6236
 
 class UIManager:
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        return cls._instance
+        
     def __init__(self):
+        if UIManager._instance is not None:
+            raise Exception("UIManager is a singleton!")
+        UIManager._instance = self
         self.logger = get_logger()
         self.display = None
         self.touch = None
@@ -222,8 +231,8 @@ class UIManager:
         usable_height = DISPLAY_HEIGHT - (GRID_ROWS + 1) * ICON_SPACING - 40 - button_height
         
         # Calculate icon positions
-        start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_WIDTH + (GRID_COLS - 1) * ICON_SPACING)) // 2
-        start_y = button_height + 20 + (DISPLAY_HEIGHT - button_height - 40 - (GRID_ROWS * ICON_HEIGHT + (GRID_ROWS - 1) * ICON_SPACING)) // 2
+        start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
+        start_y = button_height + 20 + (DISPLAY_HEIGHT - button_height - 40 - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING)) // 2
         
         # Calculate page info
         items_per_page = GRID_COLS * GRID_ROWS
@@ -244,21 +253,21 @@ class UIManager:
             col = i % GRID_COLS
             
             # Calculate pixel position
-            x = start_x + col * (ICON_WIDTH + ICON_SPACING)
-            y = start_y + row * (ICON_HEIGHT + ICON_SPACING)
+            x = start_x + col * (ICON_SIZE + ICON_SPACING)
+            y = start_y + row * (ICON_SIZE + ICON_SPACING)
             
             # Draw icon background
             if app_name == self.selected_app:
-                self.display.fill_rect(x, y, ICON_WIDTH, ICON_HEIGHT, COLOR_GRAY)
+                self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_GRAY)
                 text_color = COLOR_BLACK
             else:
-                self.display.fill_rect(x, y, ICON_WIDTH, ICON_HEIGHT, COLOR_DARK_GRAY)
+                self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_DARK_GRAY)
                 text_color = COLOR_WHITE
             
             # Draw icon if available
             if "icon" in app_data:
                 try:
-                    self.display.draw_icon(x, y, app_data["icon"], ICON_WIDTH, ICON_HEIGHT)
+                    self.display.draw_icon(x, y, app_data["icon"], ICON_SIZE, ICON_SIZE)
                 except Exception as e:
                     self.logger.error(f"Error drawing icon for {app_name}: {str(e)}")
             
@@ -267,8 +276,8 @@ class UIManager:
             if len(text) > 8:
                 text = text[:7] + '.'
             text_width = len(text) * 6
-            text_x = x + (ICON_WIDTH - text_width) // 2
-            self.display.draw_text(text_x, y + ICON_HEIGHT + 2, text, text_color, None)
+            text_x = x + (ICON_SIZE - text_width) // 2
+            self.display.draw_text(text_x, y + ICON_SIZE + 2, text, text_color, None)
         
         # Draw page indicator dots
         self.draw_page_indicators(total_pages)
@@ -306,7 +315,7 @@ class UIManager:
         # Draw app icon if available
         if "icon" in app_data:
             try:
-                icon_size = 60  # Fixed size for right panel icon
+                icon_size = ICON_SIZE  # Use the same icon size
                 icon_x = LEFT_PANEL_WIDTH + 20
                 icon_y = 60
                 self.display.draw_icon(icon_x, icon_y, app_data["icon"], icon_size, icon_size)
@@ -373,7 +382,10 @@ class UIManager:
                         
             # If coordinates are provided directly (from callback)
             elif self.touch_callback:
-                self.touch_callback(x, y, action)
+                if action is None:
+                    self.touch_callback(x, y)  # For regular touch events
+                else:
+                    self.touch_callback(action)  # For action-only events like 'switch', 'mute', etc.
                 
         except Exception as e:
             self.logger.error(f"Touch handling error: {str(e)}")
@@ -387,23 +399,23 @@ class UIManager:
             self.logger.debug("Previous button pressed")
             self.highlight_button('prev')
             if self.touch_callback:
-                self.touch_callback(x, y, 'prev')
+                self.touch_callback('prev')  # Just send the action
         elif x >= DISPLAY_WIDTH - side_width:  # Next button
             self.logger.debug("Next button pressed")
             self.highlight_button('next')
             if self.touch_callback:
-                self.touch_callback(x, y, 'next')
+                self.touch_callback('next')  # Just send the action
         elif side_width <= x < DISPLAY_WIDTH - side_width:
             if y < center_height:  # Mute button
                 self.logger.debug("Mute button pressed")
                 self.highlight_button('mute')
                 if self.touch_callback:
-                    self.touch_callback(x, y, 'mute')
+                    self.touch_callback('mute')  # Just send the action
             else:  # Play button
                 self.logger.debug("Play button pressed")
                 self.highlight_button('play')
                 if self.touch_callback:
-                    self.touch_callback(x, y, 'play')
+                    self.touch_callback('play')  # Just send the action
                     
     def handle_full_ui_touch(self, x, y):
         """Handle touch events for full UI"""
@@ -418,7 +430,7 @@ class UIManager:
         button_height = 30
         if y < button_height + 10:
             if self.touch_callback:
-                self.touch_callback('switch')
+                self.touch_callback('switch')  # Single argument for action
             return
             
         if not self.is_dragging:
@@ -450,11 +462,11 @@ class UIManager:
             if y < button_height:
                 self.highlight_button('mute')
                 if self.touch_callback:
-                    self.touch_callback('mute')
+                    self.touch_callback('mute')  # Single argument for action
             else:
                 self.highlight_button('mic')
                 if self.touch_callback:
-                    self.touch_callback('mic')
+                    self.touch_callback('mic')  # Single argument for action
                     
     def handle_drag_end(self):
         """Handle end of drag gesture"""
@@ -488,6 +500,7 @@ class UIManager:
                 self.selected_app = app_list[tapped_index]
                 self.draw_full_ui()
                 if self.touch_callback:
+                    # Send just the action and app name
                     self.touch_callback('app_selected', self.selected_app)
                     
     def highlight_button(self, button_id):
