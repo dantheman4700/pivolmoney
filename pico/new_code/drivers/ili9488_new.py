@@ -435,6 +435,8 @@ class ILI9488:
             return
         
         try:
+            self.logger.debug(f"Drawing icon at ({x}, {y}), size: {len(icon_data)} bytes")
+            
             # Set drawing window
             self._write_cmd(_CASET)
             self._write_data(bytearray([x >> 8, x & 0xFF, (x + width - 1) >> 8, (x + width - 1) & 0xFF]))
@@ -450,14 +452,60 @@ class ILI9488:
             
             # Process one row at a time
             row_size = width * 2  # 2 bytes per pixel in RGB565
+            rgb666_row = bytearray(width * 3)  # 3 bytes per pixel in RGB666
+            
+            # Log first few pixels for debugging
+            if len(icon_data) >= 8:
+                first_pixels = []
+                for p in range(0, 8, 2):
+                    pixel = (icon_data[p] << 8) | icon_data[p + 1]
+                    r = (pixel >> 11) & 0x1F
+                    g = (pixel >> 5) & 0x3F
+                    b = pixel & 0x1F
+                    first_pixels.append(f"RGB565({r},{g},{b})")
+                self.logger.debug(f"First 4 pixels: {', '.join(first_pixels)}")
+            
             for i in range(0, len(icon_data), row_size):
                 row = icon_data[i:i + row_size]
-                self.spi.write(row)
+                # Convert each pixel from RGB565 to RGB666
+                for j in range(0, len(row), 2):
+                    if j + 1 >= len(row):
+                        break
+                        
+                    # Extract RGB565 values (high byte first, then low byte)
+                    pixel = (row[j] << 8) | row[j + 1]
+                    
+                    # Extract RGB components from RGB565
+                    r5 = (pixel >> 11) & 0x1F  # 5 bits red
+                    g6 = (pixel >> 5) & 0x3F   # 6 bits green
+                    b5 = pixel & 0x1F          # 5 bits blue
+                    
+                    # Convert to RGB666
+                    # For red and blue: shift left by 1 and copy highest bit to lowest bit
+                    r6 = (r5 << 1) | (r5 >> 4)  # 5 bits to 6 bits
+                    b6 = (b5 << 1) | (b5 >> 4)  # 5 bits to 6 bits
+                    
+                    # Store in output buffer (3 bytes per pixel)
+                    rgb666_idx = (j // 2) * 3
+                    rgb666_row[rgb666_idx] = r6
+                    rgb666_row[rgb666_idx + 1] = g6
+                    rgb666_row[rgb666_idx + 2] = b6
+                    
+                    # Log first pixel of first row for debugging
+                    if i == 0 and j == 0:
+                        self.logger.debug(f"First pixel: RGB565({r5},{g6},{b5}) -> RGB666({r6},{g6},{b6})")
+                
+                # Write the converted row
+                self.spi.write(rgb666_row)
             
             self.cs.value(1)
             
         except Exception as e:
             self.logger.error(f"Error drawing icon: {str(e)}")
+            if isinstance(e, IndexError):
+                self.logger.error(f"Index error at i={i}, j={j}, row_size={row_size}, len(icon_data)={len(icon_data)}")
+            elif isinstance(e, ValueError):
+                self.logger.error(f"Value error with pixel data at i={i}, j={j}")
 
     def draw_line(self, x0, y0, x1, y1, color):
         """Draw a line from (x0,y0) to (x1,y1)"""

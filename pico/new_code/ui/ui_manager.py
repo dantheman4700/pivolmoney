@@ -239,6 +239,11 @@ class UIManager:
         total_pages = (len(self.apps) + items_per_page - 1) // items_per_page
         start_index = self.current_page * items_per_page
         
+        # Log app data for debugging
+        self.logger.info(f"Drawing app list with {len(self.apps)} apps")
+        for app_name, app_data in self.apps.items():
+            self.logger.info(f"App {app_name}: has_icon={('icon' in app_data)}, icon_size={len(app_data['icon']) if 'icon' in app_data else 0}")
+        
         # Draw apps for current page
         app_list = list(self.apps.items())
         for i in range(items_per_page):
@@ -267,9 +272,12 @@ class UIManager:
             # Draw icon if available
             if "icon" in app_data:
                 try:
+                    self.logger.info(f"Drawing icon for {app_name} at ({x}, {y})")
                     self.display.draw_icon(x, y, app_data["icon"], ICON_SIZE, ICON_SIZE)
                 except Exception as e:
                     self.logger.error(f"Error drawing icon for {app_name}: {str(e)}")
+            else:
+                self.logger.warning(f"No icon available for {app_name}")
             
             # Draw app name
             text = app_name

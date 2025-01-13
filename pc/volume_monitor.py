@@ -126,6 +126,10 @@ class VolumeMonitor:
                     print(f"Invalid icon data size: {len(icon_data)} bytes")
                     return False
                 
+                # Debug: Print first few bytes of icon data
+                print(f"First 16 bytes of raw icon data for {data.get('app', 'unknown')}:")
+                print(" ".join(f"{b:02X}" for b in icon_data[:16]))
+                
                 # Log the message and icon data size
                 print(f"Sent message before icon: {message.strip()}")
                 print(f"Icon data size for {data.get('app', 'unknown')}: {len(icon_data)} bytes")
@@ -174,6 +178,10 @@ class VolumeMonitor:
                     import base64
                     # Convert binary data to base64
                     b64_data = base64.b64encode(bytes(icon_data)).decode('ascii')
+                    
+                    # Debug: Print first part of base64 data
+                    print(f"First 32 chars of base64 data for {data.get('app', 'unknown')}:")
+                    print(b64_data[:32])
                     
                     # Send as JSON message
                     icon_message = {

@@ -38,6 +38,7 @@ class CommunicationManager:
         self.expected_icons = 0  # Track how many icons we expect
         self.received_icons = 0  # Track how many icons we've received
         self.processing_icon = False  # Flag to prevent duplicate icon processing
+        self.ui_manager = None  # Reference to UI manager
         
     def initialize(self):
         """Initialize communication interfaces"""
@@ -47,6 +48,10 @@ class CommunicationManager:
             self.protocol_initialized = False
             self.connected = False
             self.input_buffer = bytearray()
+            
+            # Get reference to UI manager
+            from ui.ui_manager import UIManager
+            self.ui_manager = UIManager.get_instance()
             
             # Initialize HID interface first
             self.media_control = MediaControlHID.get_instance()
@@ -127,6 +132,9 @@ class CommunicationManager:
                                     
                                     # Store the icon data
                                     self.apps[app_name]["icon"] = icon_data
+                                    # Update UI manager's app data
+                                    if self.ui_manager:
+                                        self.ui_manager.apps[app_name]["icon"] = icon_data
                                     self.received_icons += 1
                                     self.logger.info(f"Received {self.received_icons}/{self.expected_icons} icons")
                                     
@@ -255,6 +263,9 @@ class CommunicationManager:
                                 self.expected_icons += 1
                     
                     self.apps = new_apps
+                    # Update UI manager's app data
+                    if self.ui_manager:
+                        self.ui_manager.apps = new_apps
                     self.received_icons = 0  # Reset received icons counter
                     self.logger.info(f"Processed {len(self.apps)} unique apps from initial config, expecting {self.expected_icons} icons")
                     
@@ -270,6 +281,57 @@ class CommunicationManager:
                 except Exception as e:
                     self.logger.error(f"Error processing initial config: {str(e)}")
                     
+            elif msg_type == "icon_data_b64":
+                import binascii
+                app_name = data.get("app")
+                b64_data = data.get("data")
+                
+                if app_name and b64_data and app_name in self.apps and not self.processing_icon:
+                    self.processing_icon = True  # Set processing flag
+                    try:
+                        # Decode base64 data using binascii
+                        icon_data = binascii.a2b_base64(b64_data)
+                        self.logger.info(f"Decoded icon data for {app_name}, size: {len(icon_data)} bytes")
+                        
+                        # Verify size is correct (48x48x2 = 4608 bytes)
+                        if len(icon_data) != 4608:
+                            raise ValueError(f"Invalid icon size: {len(icon_data)} bytes")
+                        
+                        # Store the icon data
+                        self.apps[app_name]["icon"] = icon_data
+                        # Update UI manager's app data
+                        if self.ui_manager:
+                            self.ui_manager.apps[app_name]["icon"] = icon_data
+                        self.received_icons += 1
+                        self.logger.info(f"Received {self.received_icons}/{self.expected_icons} icons")
+                        
+                        # Send confirmation
+                        confirm = {
+                            "type": "icon_parsed",
+                            "app": app_name,
+                            "status": "ok"
+                        }
+                        self.send_message(confirm)
+                    except Exception as e:
+                        self.logger.error(f"Error decoding icon data: {str(e)}")
+                        # Send error confirmation
+                        error = {
+                            "type": "icon_parsed",
+                            "app": app_name,
+                            "status": "error",
+                            "error": str(e)
+                        }
+                        self.send_message(error)
+                    finally:
+                        self.processing_icon = False  # Clear processing flag
+                else:
+                    if self.processing_icon:
+                        self.logger.info("Already processing an icon, skipping request")
+                    elif app_name not in self.apps:
+                        self.logger.warning(f"Received icon data for unknown app: {app_name}")
+                    elif self.apps[app_name].get("icon"):
+                        self.logger.info(f"Already have icon for {app_name}, skipping request")
+
             elif msg_type == "icon_data":
                 app_name = data.get("app")
                 if app_name and app_name in self.apps and not self.processing_icon:
