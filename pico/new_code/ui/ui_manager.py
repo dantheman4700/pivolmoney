@@ -284,7 +284,32 @@ class UIManager:
         self.display.draw_text(text_x, 120, volume_str, COLOR_WHITE, None, scale=4)
         
         # Draw media controls at bottom
-        self.draw_media_controls()
+        media_section_height = 60
+        button_height = 40
+        button_spacing = 10
+        
+        # Draw horizontal line above media controls
+        y_divider = DISPLAY_HEIGHT - media_section_height
+        self.display.draw_hline(LEFT_PANEL_WIDTH + 1, y_divider, panel_width - 2, COLOR_WHITE)
+        
+        # Calculate button dimensions
+        button_width = (panel_width - (4 * button_spacing)) // 3  # Equal width for all three buttons
+        button_y = y_divider + (media_section_height - button_height) // 2
+        
+        # Calculate x positions for buttons
+        start_x = LEFT_PANEL_WIDTH + button_spacing
+        
+        # Draw Previous button
+        prev_x = start_x
+        self.draw_button('prev', prev_x, button_y, button_width, button_height, "Prev")
+        
+        # Draw Play/Pause button
+        play_x = prev_x + button_width + button_spacing
+        self.draw_button('play', play_x, button_y, button_width, button_height, "Play")
+        
+        # Draw Next button
+        next_x = play_x + button_width + button_spacing
+        self.draw_button('next', next_x, button_y, button_width, button_height, "Next")
         
     def draw_media_controls(self, highlight_button=None):
         """Draw media control buttons"""
