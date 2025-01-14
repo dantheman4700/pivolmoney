@@ -37,12 +37,13 @@ ENCODER_STEP = const(4096)
 ENCODER_DEBOUNCE_MS = const(5)
 
 # UI Configuration
-LEFT_PANEL_WIDTH = const(360)
-RIGHT_PANEL_WIDTH = const(120)
-ICON_SIZE = const(48)
-ICON_SPACING = const(10)
-GRID_COLS = const(3)
-GRID_ROWS = const(4)
+LEFT_PANEL_WIDTH = const(160)  # Width of app list panel
+CENTER_PANEL_WIDTH = const(220)  # Width of center info panel
+RIGHT_PANEL_WIDTH = const(100)  # Width of right button panel
+ICON_SIZE = const(60)  # Size of each app icon
+ICON_SPACING = const(10)  # Space between icons
+GRID_COLS = const(2)  # Number of columns
+GRID_ROWS = const(3)  # Number of visible rows
 
 # Colors (RGB565 format)
 COLOR_BLACK = const(0x0000)

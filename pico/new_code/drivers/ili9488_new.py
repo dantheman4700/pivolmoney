@@ -429,7 +429,7 @@ class ILI9488:
                 x -= 1
                 err += 1 - 2*x
         
-    def draw_icon(self, x, y, icon_data, width=48, height=38):
+    def draw_icon(self, x, y, icon_data, width=48, height=48):
         """Draw an icon from raw RGB565 data"""
         if not icon_data:
             return
@@ -454,17 +454,6 @@ class ILI9488:
             row_size = width * 2  # 2 bytes per pixel in RGB565
             rgb666_row = bytearray(width * 3)  # 3 bytes per pixel in RGB666
             
-            # Log first few pixels for debugging
-            if len(icon_data) >= 8:
-                first_pixels = []
-                for p in range(0, 8, 2):
-                    pixel = (icon_data[p] << 8) | icon_data[p + 1]
-                    r = (pixel >> 11) & 0x1F
-                    g = (pixel >> 5) & 0x3F
-                    b = pixel & 0x1F
-                    first_pixels.append(f"RGB565({r},{g},{b})")
-                self.logger.debug(f"First 4 pixels: {', '.join(first_pixels)}")
-            
             for i in range(0, len(icon_data), row_size):
                 row = icon_data[i:i + row_size]
                 # Convert each pixel from RGB565 to RGB666
@@ -480,20 +469,23 @@ class ILI9488:
                     g6 = (pixel >> 5) & 0x3F   # 6 bits green
                     b5 = pixel & 0x1F          # 5 bits blue
                     
-                    # Convert to RGB666
-                    # For red and blue: shift left by 1 and copy highest bit to lowest bit
-                    r6 = (r5 << 1) | (r5 >> 4)  # 5 bits to 6 bits
-                    b6 = (b5 << 1) | (b5 >> 4)  # 5 bits to 6 bits
+                    # Convert to RGB666 using better scaling
+                    # Scale up from 5 bits to 6 bits by multiplying by 63/31
+                    r6 = (r5 * 63) // 31
+                    # Green is already 6 bits
+                    # Scale up from 5 bits to 6 bits for blue
+                    b6 = (b5 * 63) // 31
+                    
+                    # Ensure values are within bounds
+                    r6 = min(63, max(0, r6))
+                    g6 = min(63, max(0, g6))
+                    b6 = min(63, max(0, b6))
                     
                     # Store in output buffer (3 bytes per pixel)
                     rgb666_idx = (j // 2) * 3
                     rgb666_row[rgb666_idx] = r6
                     rgb666_row[rgb666_idx + 1] = g6
                     rgb666_row[rgb666_idx + 2] = b6
-                    
-                    # Log first pixel of first row for debugging
-                    if i == 0 and j == 0:
-                        self.logger.debug(f"First pixel: RGB565({r5},{g6},{b5}) -> RGB666({r6},{g6},{b6})")
                 
                 # Write the converted row
                 self.spi.write(rgb666_row)
@@ -502,10 +494,7 @@ class ILI9488:
             
         except Exception as e:
             self.logger.error(f"Error drawing icon: {str(e)}")
-            if isinstance(e, IndexError):
-                self.logger.error(f"Index error at i={i}, j={j}, row_size={row_size}, len(icon_data)={len(icon_data)}")
-            elif isinstance(e, ValueError):
-                self.logger.error(f"Value error with pixel data at i={i}, j={j}")
+            self.cs.value(1)  # Ensure CS is released in case of error
 
     def draw_line(self, x0, y0, x1, y1, color):
         """Draw a line from (x0,y0) to (x1,y1)"""

@@ -8,7 +8,7 @@ from core.config import (
     RIGHT_PANEL_WIDTH, ICON_SIZE, ICON_SPACING, GRID_COLS, GRID_ROWS,
     PIN_SPI_SCK, PIN_SPI_MOSI, PIN_SPI_MISO, PIN_DC, PIN_RST,
     PIN_CS, PIN_LED, PIN_TOUCH_SDA, PIN_TOUCH_SCL, PIN_TOUCH_INT,
-    PIN_TOUCH_RST, SPI_BAUDRATE, TOUCH_I2C_FREQ
+    PIN_TOUCH_RST, SPI_BAUDRATE, TOUCH_I2C_FREQ, CENTER_PANEL_WIDTH
 )
 from drivers.ili9488 import ILI9488
 from drivers.ft6236 import FT6236
@@ -190,31 +190,25 @@ class UIManager:
         
     def draw_full_ui(self):
         """Draw full UI with app list"""
-        # Draw panel divider
-        self.display.draw_vline(LEFT_PANEL_WIDTH, 0, DISPLAY_HEIGHT, COLOR_WHITE)
+        # Clear screen first
+        self.display.fill(COLOR_BLACK)
         
-        # Draw app list
+        # Draw panel dividers (two vertical lines)
+        self.display.draw_vline(LEFT_PANEL_WIDTH, 0, DISPLAY_HEIGHT, COLOR_WHITE)
+        self.display.draw_vline(DISPLAY_WIDTH - RIGHT_PANEL_WIDTH, 0, DISPLAY_HEIGHT, COLOR_WHITE)
+        
+        # Draw app list with Switch Device button
         self.draw_app_list()
         
-        # Draw right panel for selected app
+        # Draw center panel with app info
         if self.selected_app and self.selected_app in self.apps:
-            self.draw_right_panel(self.apps[self.selected_app])
-            
-        # Draw control buttons
-        self.draw_control_buttons()
+            app_data = self.apps[self.selected_app]
+            self.draw_center_panel(self.selected_app, app_data.get("volume", 0))
+        elif self.selected_app == "Master":
+            self.draw_center_panel("Master", 100)
         
-    def draw_button(self, button_id, x, y, width, height, text, highlighted=False):
-        """Draw a single button"""
-        color = COLOR_GRAY if highlighted else COLOR_DARK_GRAY
-        self.display.fill_rect(x, y, width, height, color)
-        self.display.draw_rectangle(x, y, width, height, COLOR_WHITE)
-        
-        text_width = len(text) * 16  # Scale 2 font is 16 pixels wide per character
-        text_x = x + (width - text_width) // 2
-        text_y = y + (height - 16) // 2  # Scale 2 font is 16 pixels high
-        
-        text_color = COLOR_BLACK if highlighted else COLOR_WHITE
-        self.display.draw_text(text_x, text_y, text, text_color, None, scale=2)
+        # Draw right panel buttons (Mute/Mic)
+        self.draw_side_buttons()
         
     def draw_app_list(self):
         """Draw app grid with icons"""
@@ -226,40 +220,25 @@ class UIManager:
         button_width = LEFT_PANEL_WIDTH - 10
         self.draw_button('switch', 5, 5, button_width, button_height, "Switch Device")
         
-        # Calculate grid layout
-        usable_width = LEFT_PANEL_WIDTH - (GRID_COLS + 1) * ICON_SPACING
-        usable_height = DISPLAY_HEIGHT - (GRID_ROWS + 1) * ICON_SPACING - 40 - button_height
+        # Calculate grid layout for 2x3 grid
+        start_x = 10  # Fixed left margin
+        start_y = button_height + 20  # Start below Switch Device button
         
-        # Calculate icon positions
-        start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
-        start_y = button_height + 20 + (DISPLAY_HEIGHT - button_height - 40 - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING)) // 2
+        # Add master volume as first item
+        app_list = [("Master", {"name": "Master", "volume": 100})] + list(self.apps.items())
         
-        # Calculate page info
-        items_per_page = GRID_COLS * GRID_ROWS
-        total_pages = (len(self.apps) + items_per_page - 1) // items_per_page
-        start_index = self.current_page * items_per_page
-        
-        # Log app data for debugging
-        self.logger.info(f"Drawing app list with {len(self.apps)} apps")
-        for app_name, app_data in self.apps.items():
-            self.logger.info(f"App {app_name}: has_icon={('icon' in app_data)}, icon_size={len(app_data['icon']) if 'icon' in app_data else 0}")
-        
-        # Draw apps for current page
-        app_list = list(self.apps.items())
-        for i in range(items_per_page):
-            app_index = start_index + i
-            if app_index >= len(app_list):
+        # Draw apps
+        for i, (app_name, app_data) in enumerate(app_list):
+            if i >= GRID_COLS * GRID_ROWS:
                 break
                 
-            app_name, app_data = app_list[app_index]
-            
             # Calculate grid position
             row = i // GRID_COLS
             col = i % GRID_COLS
             
             # Calculate pixel position
             x = start_x + col * (ICON_SIZE + ICON_SPACING)
-            y = start_y + row * (ICON_SIZE + ICON_SPACING)
+            y = start_y + row * (ICON_SIZE + ICON_SPACING + 15)  # Extra space for text
             
             # Draw icon background
             if app_name == self.selected_app:
@@ -270,14 +249,13 @@ class UIManager:
                 text_color = COLOR_WHITE
             
             # Draw icon if available
-            if "icon" in app_data:
+            if app_name != "Master" and "icon" in app_data:
                 try:
-                    self.logger.info(f"Drawing icon for {app_name} at ({x}, {y})")
-                    self.display.draw_icon(x, y, app_data["icon"], ICON_SIZE, ICON_SIZE)
+                    # Center the 48x48 icon in the 60x60 space
+                    icon_offset = (ICON_SIZE - 48) // 2
+                    self.display.draw_icon(x + icon_offset, y + icon_offset, app_data["icon"])
                 except Exception as e:
                     self.logger.error(f"Error drawing icon for {app_name}: {str(e)}")
-            else:
-                self.logger.warning(f"No icon available for {app_name}")
             
             # Draw app name
             text = app_name
@@ -285,87 +263,96 @@ class UIManager:
                 text = text[:7] + '.'
             text_width = len(text) * 6
             text_x = x + (ICON_SIZE - text_width) // 2
-            self.display.draw_text(text_x, y + ICON_SIZE + 2, text, text_color, None)
+            self.display.draw_text(text_x, y + ICON_SIZE + 5, text, text_color, None)
         
-        # Draw page indicator dots
-        self.draw_page_indicators(total_pages)
+    def draw_center_panel(self, app_name, volume):
+        """Draw center panel with app name and volume"""
+        panel_width = DISPLAY_WIDTH - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH
         
-    def draw_page_indicators(self, total_pages):
-        """Draw page indicator dots"""
-        dot_radius = 3
-        dot_spacing = 10
-        total_width = (total_pages * (dot_radius * 2 + dot_spacing)) - dot_spacing
-        start_x = (LEFT_PANEL_WIDTH - total_width) // 2
-        dot_y = DISPLAY_HEIGHT - 15
+        # Clear center panel
+        self.display.fill_rect(LEFT_PANEL_WIDTH + 1, 0, panel_width - 1, DISPLAY_HEIGHT, COLOR_BLACK)
         
-        for i in range(total_pages):
-            dot_x = start_x + i * (dot_radius * 2 + dot_spacing)
-            if i == self.current_page:
-                self.display.fill_circle(dot_x + dot_radius, dot_y, dot_radius, COLOR_WHITE)
-            else:
-                self.display.fill_circle(dot_x + dot_radius, dot_y, dot_radius, COLOR_DARK_GRAY)
-                
-    def draw_right_panel(self, app_data):
-        """Draw right panel with app info and volume"""
-        # Clear right panel
-        self.display.fill_rect(LEFT_PANEL_WIDTH + 1, 0, RIGHT_PANEL_WIDTH - 100, DISPLAY_HEIGHT, COLOR_BLACK)
+        # Draw app name (scaled x3)
+        text_width = len(app_name) * 18  # 18 pixels per char at scale 3
+        text_x = LEFT_PANEL_WIDTH + (panel_width - text_width) // 2
+        self.display.draw_text(text_x, 40, app_name, COLOR_WHITE, None, scale=3)
         
-        # Draw app name
-        self.display.draw_text(
-            LEFT_PANEL_WIDTH + 20,
-            20,
-            app_data.get("name", "Unknown"),
-            COLOR_WHITE,
-            None,
-            scale=3
-        )
+        # Draw volume (scaled x4)
+        volume_str = str(volume)
+        text_width = len(volume_str) * 24  # 24 pixels per char at scale 4
+        text_x = LEFT_PANEL_WIDTH + (panel_width - text_width) // 2
+        self.display.draw_text(text_x, 120, volume_str, COLOR_WHITE, None, scale=4)
         
-        # Draw app icon if available
-        if "icon" in app_data:
-            try:
-                icon_size = ICON_SIZE  # Use the same icon size
-                icon_x = LEFT_PANEL_WIDTH + 20
-                icon_y = 60
-                self.display.draw_icon(icon_x, icon_y, app_data["icon"], icon_size, icon_size)
-            except Exception as e:
-                self.logger.error(f"Error drawing icon in right panel: {str(e)}")
+        # Draw media controls at bottom
+        self.draw_media_controls()
         
-        # Draw volume
-        volume = app_data.get("volume", 0)
-        self.display.draw_text(
-            LEFT_PANEL_WIDTH + 20,
-            140,  # Adjusted position to make room for icon
-            str(volume),
-            COLOR_WHITE,
-            None,
-            scale=4
-        )
+    def draw_media_controls(self, highlight_button=None):
+        """Draw media control buttons"""
+        panel_width = DISPLAY_WIDTH - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH
+        media_section_height = 60
+        button_height = 45
         
-        # Draw volume bar
-        bar_width = RIGHT_PANEL_WIDTH - 150
-        bar_height = 20
-        x = LEFT_PANEL_WIDTH + 20
-        y = 200  # Adjusted position to make room for icon
-        self.display.draw_rectangle(x, y, bar_width, bar_height, COLOR_WHITE)
-        fill_width = int(bar_width * volume / 100)
-        if fill_width > 0:
-            self.display.fill_rect(x + 1, y + 1, fill_width - 2, bar_height - 2, COLOR_WHITE)
-            
-    def draw_control_buttons(self):
-        """Draw media control and mute buttons"""
-        button_panel_width = 100
-        button_panel_x = DISPLAY_WIDTH - button_panel_width
-        button_width = button_panel_width - 10
+        # Draw dividing line above media controls
+        y_divider = DISPLAY_HEIGHT - media_section_height
+        self.display.draw_hline(LEFT_PANEL_WIDTH + 1, y_divider, panel_width - 2, COLOR_WHITE)
+        
+        # Calculate button dimensions and positions
+        button_width = (panel_width - 40) // 3  # Equal width for all three buttons
+        button_y = y_divider + (media_section_height - button_height) // 2
+        
+        # Calculate x positions for buttons with spacing
+        spacing = 10
+        total_width = (button_width * 3) + (spacing * 2)
+        start_x = LEFT_PANEL_WIDTH + (panel_width - total_width) // 2
+        
+        prev_x = start_x
+        play_x = start_x + button_width + spacing
+        next_x = start_x + 2 * (button_width + spacing)
+        
+        # Draw Previous button
+        color = COLOR_GRAY if highlight_button == 'prev' else COLOR_DARK_GRAY
+        text_color = COLOR_BLACK if highlight_button == 'prev' else COLOR_WHITE
+        self.display.fill_rect(prev_x, button_y, button_width, button_height, color)
+        text_x = prev_x + (button_width - 30) // 2
+        self.display.draw_text(text_x, button_y + (button_height - 8) // 2, "Prev", text_color, None)
+        
+        # Draw Play button
+        color = COLOR_GRAY if highlight_button == 'play' else COLOR_DARK_GRAY
+        text_color = COLOR_BLACK if highlight_button == 'play' else COLOR_WHITE
+        self.display.fill_rect(play_x, button_y, button_width, button_height, color)
+        text_x = play_x + (button_width - 36) // 2
+        self.display.draw_text(text_x, button_y + (button_height - 8) // 2, "Play", text_color, None)
+        
+        # Draw Next button
+        color = COLOR_GRAY if highlight_button == 'next' else COLOR_DARK_GRAY
+        text_color = COLOR_BLACK if highlight_button == 'next' else COLOR_WHITE
+        self.display.fill_rect(next_x, button_y, button_width, button_height, color)
+        text_x = next_x + (button_width - 30) // 2
+        self.display.draw_text(text_x, button_y + (button_height - 8) // 2, "Next", text_color, None)
+        
+    def draw_side_buttons(self):
+        """Draw right side Mute/Mic buttons"""
+        button_width = 90
         button_height = DISPLAY_HEIGHT // 2 - 5
-        
-        # Draw vertical divider
-        self.display.draw_vline(button_panel_x, 0, DISPLAY_HEIGHT, COLOR_WHITE)
+        button_x = DISPLAY_WIDTH - 95
         
         # Draw Mute button
-        self.draw_button('mute', button_panel_x + 5, 5, button_width, button_height, "Mute")
+        self.draw_button('mute', button_x, 5, button_width, button_height, "Mute")
         
         # Draw Mic button
-        self.draw_button('mic', button_panel_x + 5, button_height + 10, button_width, button_height, "Mic")
+        self.draw_button('mic', button_x, button_height + 10, button_width, button_height, "Mic")
+        
+    def draw_button(self, button_id, x, y, width, height, text, highlighted=False):
+        """Draw a single button"""
+        color = COLOR_GRAY if highlighted else COLOR_DARK_GRAY
+        self.display.fill_rect(x, y, width, height, color)
+        
+        text_color = COLOR_BLACK if highlighted else COLOR_WHITE
+        text_width = len(text) * 6
+        text_x = x + (width - text_width) // 2
+        text_y = y + (height - 8) // 2
+        
+        self.display.draw_text(text_x, text_y, text, text_color, None)
         
     def handle_touch(self, x=None, y=None, action=None):
         """Handle touch events"""
@@ -426,56 +413,109 @@ class UIManager:
                     self.touch_callback('play')  # Just send the action
                     
     def handle_full_ui_touch(self, x, y):
-        """Handle touch events for full UI"""
+        """Handle touch events in full UI mode"""
+        # Check if touch is in left panel (app grid)
         if x < LEFT_PANEL_WIDTH:
             self.handle_app_list_touch(x, y)
-        else:
-            self.handle_control_touch(x, y)
-            
-    def handle_app_list_touch(self, x, y):
-        """Handle touch events in app list area"""
-        # Handle Switch Device button
-        button_height = 30
-        if y < button_height + 10:
-            if self.touch_callback:
-                self.touch_callback('switch')  # Single argument for action
             return
             
-        if not self.is_dragging:
-            self.is_dragging = True
-            self.drag_start_x = x
-        else:
-            # Calculate drag distance
-            drag_distance = x - self.drag_start_x
+        # Check if touch is in right panel (buttons)
+        if x > DISPLAY_WIDTH - 100:
+            self.handle_side_button_touch(x, y)
+            return
             
-            # Check for swipe
-            if abs(drag_distance) > self.swipe_threshold:
-                items_per_page = GRID_COLS * GRID_ROWS
-                total_pages = (len(self.apps) + items_per_page - 1) // items_per_page
-                
-                if drag_distance > 0 and self.current_page > 0:
-                    self.current_page -= 1
-                    self.draw_app_list()
-                elif drag_distance < 0 and self.current_page < total_pages - 1:
-                    self.current_page += 1
-                    self.draw_app_list()
-                self.is_dragging = False
-                
-    def handle_control_touch(self, x, y):
-        """Handle touch events in control area"""
-        button_panel_width = 100
-        button_height = DISPLAY_HEIGHT // 2
+        # Check if touch is in media controls area
+        if y > DISPLAY_HEIGHT - 60:
+            self.handle_media_controls_touch(x, y)
+            return
+            
+    def handle_media_controls_touch(self, x, y):
+        """Handle touch events in media controls area"""
+        info_panel_width = RIGHT_PANEL_WIDTH - 100
+        button_width = (info_panel_width - 40) // 3
+        button_height = 45
         
-        if x >= DISPLAY_WIDTH - button_panel_width:
-            if y < button_height:
-                self.highlight_button('mute')
+        # Calculate button positions
+        spacing = 10
+        total_width = (button_width * 3) + (spacing * 2)
+        start_x = LEFT_PANEL_WIDTH + ((info_panel_width - total_width) // 2)
+        
+        prev_x = start_x
+        play_x = start_x + button_width + spacing
+        next_x = start_x + 2 * (button_width + spacing)
+        
+        button_y = DISPLAY_HEIGHT - 60 + ((60 - button_height) // 2)
+        
+        # Check which button was pressed
+        if y >= button_y and y <= button_y + button_height:
+            if x >= prev_x and x <= prev_x + button_width:
+                self.logger.info("Previous track button pressed")
                 if self.touch_callback:
-                    self.touch_callback('mute')  # Single argument for action
-            else:
-                self.highlight_button('mic')
+                    self.touch_callback("prev")
+                self.draw_media_controls("prev")
+                time.sleep(0.1)
+                self.draw_media_controls()
+                
+            elif x >= play_x and x <= play_x + button_width:
+                self.logger.info("Play/Pause button pressed")
                 if self.touch_callback:
-                    self.touch_callback('mic')  # Single argument for action
+                    self.touch_callback("play")
+                self.draw_media_controls("play")
+                time.sleep(0.1)
+                self.draw_media_controls()
+                
+            elif x >= next_x and x <= next_x + button_width:
+                self.logger.info("Next track button pressed")
+                if self.touch_callback:
+                    self.touch_callback("next")
+                self.draw_media_controls("next")
+                time.sleep(0.1)
+                self.draw_media_controls()
+                
+    def handle_app_list_touch(self, x, y):
+        """Handle touch events for app list"""
+        # Calculate grid layout
+        GRID_COLS = 2
+        GRID_ROWS = 3
+        
+        # Calculate icon positions
+        start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
+        start_y = button_height + 20
+        
+        # Check if touch is in grid area
+        if (start_x <= x < start_x + GRID_COLS * (ICON_SIZE + ICON_SPACING) and
+            start_y <= y < start_y + GRID_ROWS * (ICON_SIZE + ICON_SPACING)):
+            
+            # Calculate which icon was tapped
+            col = (x - start_x) // (ICON_SIZE + ICON_SPACING)
+            row = (y - start_y) // (ICON_SIZE + ICON_SPACING)
+            
+            if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
+                tapped_index = row * GRID_COLS + col
+                app_list = ["Master"] + list(self.apps.keys())
+                if 0 <= tapped_index < len(app_list):
+                    self.selected_app = app_list[tapped_index]
+                    self.draw_full_ui()
+                    if self.touch_callback:
+                        self.touch_callback('app_selected', self.selected_app)
                     
+    def handle_side_button_touch(self, x, y):
+        """Handle touch events for side buttons"""
+        button_width = 90
+        button_height = DISPLAY_HEIGHT // 2 - 5
+        button_x = DISPLAY_WIDTH - 95
+        
+        # Check if touch is in Mute button area
+        if button_x <= x <= button_x + button_width and 5 <= y <= button_height:
+            self.logger.info("Mute button pressed")
+            if self.touch_callback:
+                self.touch_callback('mute')
+        # Check if touch is in Mic button area
+        elif button_x <= x <= button_x + button_width and button_height + 10 <= y <= DISPLAY_HEIGHT - 5:
+            self.logger.info("Mic button pressed")
+            if self.touch_callback:
+                self.touch_callback('mic')
+                
     def handle_drag_end(self):
         """Handle end of drag gesture"""
         self.is_dragging = False
@@ -493,23 +533,22 @@ class UIManager:
         start_index = self.current_page * items_per_page
         
         # Calculate which icon was tapped
-        usable_width = LEFT_PANEL_WIDTH - (GRID_COLS + 1) * ICON_SPACING
-        usable_height = DISPLAY_HEIGHT - (GRID_ROWS + 1) * ICON_SPACING - 60
-        icon_width = usable_width // GRID_COLS
-        icon_height = usable_height // GRID_ROWS
+        button_height = 30
+        start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
+        start_y = button_height + 20 + (DISPLAY_HEIGHT - button_height - 40 - (GRID_ROWS * ICON_SIZE + (GRID_ROWS - 1) * ICON_SPACING)) // 2
         
-        col = (x - (LEFT_PANEL_WIDTH - usable_width) // 2) // (icon_width + ICON_SPACING)
-        row = (y - 40) // (icon_height + ICON_SPACING)
-        
-        if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
-            tapped_index = start_index + row * GRID_COLS + col
-            app_list = list(self.apps.keys())
-            if 0 <= tapped_index < len(app_list):
-                self.selected_app = app_list[tapped_index]
-                self.draw_full_ui()
-                if self.touch_callback:
-                    # Send just the action and app name
-                    self.touch_callback('app_selected', self.selected_app)
+        if start_x <= x < start_x + GRID_COLS * (ICON_SIZE + ICON_SPACING):
+            col = (x - start_x) // (ICON_SIZE + ICON_SPACING)
+            row = (y - start_y) // (ICON_SIZE + ICON_SPACING)
+            
+            if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
+                tapped_index = start_index + row * GRID_COLS + col
+                app_list = ["Master"] + list(self.apps.keys())
+                if 0 <= tapped_index < len(app_list):
+                    self.selected_app = app_list[tapped_index]
+                    self.draw_full_ui()
+                    if self.touch_callback:
+                        self.touch_callback('app_selected', self.selected_app)
                     
     def highlight_button(self, button_id):
         """Temporarily highlight a button"""
