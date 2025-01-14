@@ -206,6 +206,9 @@ class UIManager:
             self.draw_center_panel(self.selected_app, app_data.get("volume", 0))
         elif self.selected_app == "Master":
             self.draw_center_panel("Master", 100)
+        else:
+            # Draw empty center panel with just media controls
+            self.draw_center_panel("Select App", 0)
         
         # Draw right panel buttons (Mute/Mic)
         self.draw_side_buttons()
@@ -284,31 +287,34 @@ class UIManager:
         self.display.draw_text(text_x, 120, volume_str, COLOR_WHITE, None, scale=4)
         
         # Draw media controls at bottom
+        panel_width = DISPLAY_WIDTH - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH
         media_section_height = 60
-        button_height = 40
-        button_spacing = 10
+        button_height = 45
         
-        # Draw horizontal line above media controls
+        # Draw dividing line above media controls
         y_divider = DISPLAY_HEIGHT - media_section_height
         self.display.draw_hline(LEFT_PANEL_WIDTH + 1, y_divider, panel_width - 2, COLOR_WHITE)
         
-        # Calculate button dimensions
-        button_width = (panel_width - (4 * button_spacing)) // 3  # Equal width for all three buttons
+        # Calculate button dimensions and positions
+        button_width = (panel_width - 40) // 3  # Equal width for all three buttons
         button_y = y_divider + (media_section_height - button_height) // 2
         
-        # Calculate x positions for buttons
-        start_x = LEFT_PANEL_WIDTH + button_spacing
+        # Calculate x positions for buttons with spacing
+        spacing = 10
+        total_width = (button_width * 3) + (spacing * 2)
+        start_x = LEFT_PANEL_WIDTH + (panel_width - total_width) // 2
+        
+        prev_x = start_x
+        play_x = start_x + button_width + spacing
+        next_x = start_x + 2 * (button_width + spacing)
         
         # Draw Previous button
-        prev_x = start_x
         self.draw_button('prev', prev_x, button_y, button_width, button_height, "Prev")
         
-        # Draw Play/Pause button
-        play_x = prev_x + button_width + button_spacing
+        # Draw Play button
         self.draw_button('play', play_x, button_y, button_width, button_height, "Play")
         
         # Draw Next button
-        next_x = play_x + button_width + button_spacing
         self.draw_button('next', next_x, button_y, button_width, button_height, "Next")
         
     def draw_media_controls(self, highlight_button=None):
@@ -456,24 +462,26 @@ class UIManager:
             
     def handle_media_controls_touch(self, x, y):
         """Handle touch events in media controls area"""
-        info_panel_width = RIGHT_PANEL_WIDTH - 100
-        button_width = (info_panel_width - 40) // 3
+        panel_width = DISPLAY_WIDTH - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH
+        media_section_height = 60
         button_height = 45
         
-        # Calculate button positions
+        # Calculate button dimensions and positions
+        button_width = (panel_width - 40) // 3  # Equal width for all three buttons
+        button_y = DISPLAY_HEIGHT - media_section_height + (media_section_height - button_height) // 2
+        
+        # Calculate x positions for buttons with spacing
         spacing = 10
         total_width = (button_width * 3) + (spacing * 2)
-        start_x = LEFT_PANEL_WIDTH + ((info_panel_width - total_width) // 2)
+        start_x = LEFT_PANEL_WIDTH + (panel_width - total_width) // 2
         
         prev_x = start_x
         play_x = start_x + button_width + spacing
         next_x = start_x + 2 * (button_width + spacing)
         
-        button_y = DISPLAY_HEIGHT - 60 + ((60 - button_height) // 2)
-        
         # Check which button was pressed
-        if y >= button_y and y <= button_y + button_height:
-            if x >= prev_x and x <= prev_x + button_width:
+        if button_y <= y <= button_y + button_height:
+            if prev_x <= x <= prev_x + button_width:
                 self.logger.info("Previous track button pressed")
                 if self.touch_callback:
                     self.touch_callback("prev")
@@ -481,7 +489,7 @@ class UIManager:
                 time.sleep(0.1)
                 self.draw_media_controls()
                 
-            elif x >= play_x and x <= play_x + button_width:
+            elif play_x <= x <= play_x + button_width:
                 self.logger.info("Play/Pause button pressed")
                 if self.touch_callback:
                     self.touch_callback("play")
@@ -489,7 +497,7 @@ class UIManager:
                 time.sleep(0.1)
                 self.draw_media_controls()
                 
-            elif x >= next_x and x <= next_x + button_width:
+            elif next_x <= x <= next_x + button_width:
                 self.logger.info("Next track button pressed")
                 if self.touch_callback:
                     self.touch_callback("next")
@@ -499,27 +507,35 @@ class UIManager:
                 
     def handle_app_list_touch(self, x, y):
         """Handle touch events for app list"""
+        # Check if touch is in Switch Device button
+        if 5 <= x <= LEFT_PANEL_WIDTH - 5 and 5 <= y <= 35:
+            self.logger.info("Switch Device button pressed")
+            if self.touch_callback:
+                self.touch_callback('switch')
+            return
+
         # Calculate grid layout
-        GRID_COLS = 2
-        GRID_ROWS = 3
+        start_x = 10  # Fixed left margin
+        start_y = 50  # Start below Switch Device button
         
-        # Calculate icon positions
-        start_x = (LEFT_PANEL_WIDTH - (GRID_COLS * ICON_SIZE + (GRID_COLS - 1) * ICON_SPACING)) // 2
-        start_y = button_height + 20
+        # Calculate grid cell size
+        cell_width = ICON_SIZE + ICON_SPACING
+        cell_height = ICON_SIZE + ICON_SPACING + 15  # Extra space for text
         
         # Check if touch is in grid area
-        if (start_x <= x < start_x + GRID_COLS * (ICON_SIZE + ICON_SPACING) and
-            start_y <= y < start_y + GRID_ROWS * (ICON_SIZE + ICON_SPACING)):
+        if (start_x <= x < start_x + GRID_COLS * cell_width and
+            start_y <= y < start_y + GRID_ROWS * cell_height):
             
             # Calculate which icon was tapped
-            col = (x - start_x) // (ICON_SIZE + ICON_SPACING)
-            row = (y - start_y) // (ICON_SIZE + ICON_SPACING)
+            col = (x - start_x) // cell_width
+            row = (y - start_y) // cell_height
             
             if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
                 tapped_index = row * GRID_COLS + col
                 app_list = ["Master"] + list(self.apps.keys())
                 if 0 <= tapped_index < len(app_list):
                     self.selected_app = app_list[tapped_index]
+                    self.logger.info(f"Selected app: {self.selected_app}")
                     self.draw_full_ui()
                     if self.touch_callback:
                         self.touch_callback('app_selected', self.selected_app)
