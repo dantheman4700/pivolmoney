@@ -218,10 +218,14 @@ class UIManager:
         # Clear left panel
         self.display.fill_rect(0, 0, LEFT_PANEL_WIDTH, DISPLAY_HEIGHT, COLOR_BLACK)
         
-        # Draw Switch Device button at top
+        # Draw Switch Device button at top (centered text)
         button_height = 30
         button_width = LEFT_PANEL_WIDTH - 10
-        self.draw_button('switch', 5, 5, button_width, button_height, "Switch Device")
+        text_width = 96  # Hardcoded width for "Switch Device" (12 chars * 8 pixels)
+        button_x = 5
+        text_x = button_x + (button_width - text_width) // 2
+        self.display.fill_rect(button_x, 5, button_width, button_height, COLOR_DARK_GRAY)
+        self.display.draw_text(text_x, 5 + (button_height - 8) // 2, "Switch Device", COLOR_WHITE, None)
         
         # Calculate grid layout for 2x3 grid
         start_x = 10  # Fixed left margin
@@ -260,72 +264,85 @@ class UIManager:
                 except Exception as e:
                     self.logger.error(f"Error drawing icon for {app_name}: {str(e)}")
             
-            # Draw app name
+            # Draw app name (remove .exe and truncate if needed)
             text = app_name
+            if text.lower().endswith('.exe'):
+                text = text[:-4]
             if len(text) > 8:
                 text = text[:7] + '.'
-            text_width = len(text) * 6
-            text_x = x + (ICON_SIZE - text_width) // 2
-            self.display.draw_text(text_x, y + ICON_SIZE + 5, text, text_color, None)
+                
+            # Calculate text width using 8 pixels per char
+            text_width = len(text) * 8
+            # Center text under icon
+            text_x = x + ((ICON_SIZE - text_width) // 2) - 2
+            text_y = y + ICON_SIZE + 5
+            self.display.draw_text(text_x, text_y, text, text_color, None)
         
     def draw_center_panel(self, app_name, volume):
         """Draw center panel with app name and volume"""
-        panel_width = DISPLAY_WIDTH - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH
+        panel_width = CENTER_PANEL_WIDTH
+        panel_start_x = LEFT_PANEL_WIDTH + 1
         
         # Clear center panel
-        self.display.fill_rect(LEFT_PANEL_WIDTH + 1, 0, panel_width - 1, DISPLAY_HEIGHT, COLOR_BLACK)
+        self.display.fill_rect(panel_start_x, 0, panel_width - 1, DISPLAY_HEIGHT, COLOR_BLACK)
         
-        # Draw app name (scaled x3)
-        text_width = len(app_name) * 18  # 18 pixels per char at scale 3
-        text_x = LEFT_PANEL_WIDTH + (panel_width - text_width) // 2
-        self.display.draw_text(text_x, 40, app_name, COLOR_WHITE, None, scale=3)
-        
-        # Draw volume (scaled x4)
-        volume_str = str(volume)
-        text_width = len(volume_str) * 24  # 24 pixels per char at scale 4
-        text_x = LEFT_PANEL_WIDTH + (panel_width - text_width) // 2
-        self.display.draw_text(text_x, 120, volume_str, COLOR_WHITE, None, scale=4)
-        
-        # Draw media controls at bottom
-        panel_width = DISPLAY_WIDTH - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH
+        # Calculate available height (excluding media controls area)
         media_section_height = 60
-        button_height = 45
+        available_height = DISPLAY_HEIGHT - media_section_height
+        
+        # Process app name - remove .exe extension first
+        if app_name.lower().endswith('.exe'):
+            app_name = app_name[:-4]  # Strip .exe extension
+        
+        # Split into lines of maximum 12 characters
+        CHARS_PER_LINE = 12
+        lines = []
+        remaining_text = app_name
+        
+        while remaining_text:
+            if len(remaining_text) <= CHARS_PER_LINE:
+                lines.append(remaining_text)
+                break
+            else:
+                lines.append(remaining_text[:CHARS_PER_LINE])
+                remaining_text = remaining_text[CHARS_PER_LINE:]
+        
+        # Limit to 3 lines maximum
+        if len(lines) > 3:
+            lines = lines[:2]
+            lines[1] = lines[1][:9] + "..."  # Adjusted for 12 char limit
+        
+        # Calculate text block height and starting position
+        line_height = 25  # Height of each line at scale 2
+        total_text_height = len(lines) * line_height
+        text_start_y = 20  # Fixed padding from top
+        text_start_x = panel_start_x + 10  # Fixed left margin
+        
+        # Draw each line left-aligned
+        for i, line in enumerate(lines):
+            self.display.draw_text(text_start_x, text_start_y + (i * line_height), line, COLOR_WHITE, None, scale=2)
+        
+        # Draw volume (scaled x4) - left aligned like the text
+        volume_str = str(volume)
+        volume_y = text_start_y + total_text_height + 30  # Fixed spacing after text
+        self.display.draw_text(text_start_x, volume_y, volume_str, COLOR_WHITE, None, scale=4)
         
         # Draw dividing line above media controls
-        y_divider = DISPLAY_HEIGHT - media_section_height
-        self.display.draw_hline(LEFT_PANEL_WIDTH + 1, y_divider, panel_width - 2, COLOR_WHITE)
+        self.display.draw_hline(panel_start_x, DISPLAY_HEIGHT - media_section_height, panel_width - 2, COLOR_WHITE)
         
-        # Calculate button dimensions and positions
-        button_width = (panel_width - 40) // 3  # Equal width for all three buttons
-        button_y = y_divider + (media_section_height - button_height) // 2
-        
-        # Calculate x positions for buttons with spacing
-        spacing = 10
-        total_width = (button_width * 3) + (spacing * 2)
-        start_x = LEFT_PANEL_WIDTH + (panel_width - total_width) // 2
-        
-        prev_x = start_x
-        play_x = start_x + button_width + spacing
-        next_x = start_x + 2 * (button_width + spacing)
-        
-        # Draw Previous button
-        self.draw_button('prev', prev_x, button_y, button_width, button_height, "Prev")
-        
-        # Draw Play button
-        self.draw_button('play', play_x, button_y, button_width, button_height, "Play")
-        
-        # Draw Next button
-        self.draw_button('next', next_x, button_y, button_width, button_height, "Next")
+        # Draw media controls at bottom
+        self.draw_media_controls()
         
     def draw_media_controls(self, highlight_button=None):
         """Draw media control buttons"""
-        panel_width = DISPLAY_WIDTH - LEFT_PANEL_WIDTH - RIGHT_PANEL_WIDTH
+        panel_width = CENTER_PANEL_WIDTH
+        panel_start_x = LEFT_PANEL_WIDTH + 1
         media_section_height = 60
         button_height = 45
         
         # Draw dividing line above media controls
         y_divider = DISPLAY_HEIGHT - media_section_height
-        self.display.draw_hline(LEFT_PANEL_WIDTH + 1, y_divider, panel_width - 2, COLOR_WHITE)
+        self.display.draw_hline(panel_start_x, y_divider, panel_width - 2, COLOR_WHITE)
         
         # Calculate button dimensions and positions
         button_width = (panel_width - 40) // 3  # Equal width for all three buttons
@@ -334,7 +351,7 @@ class UIManager:
         # Calculate x positions for buttons with spacing
         spacing = 10
         total_width = (button_width * 3) + (spacing * 2)
-        start_x = LEFT_PANEL_WIDTH + (panel_width - total_width) // 2
+        start_x = panel_start_x + (panel_width - total_width) // 2
         
         prev_x = start_x
         play_x = start_x + button_width + spacing
@@ -534,9 +551,45 @@ class UIManager:
                 tapped_index = row * GRID_COLS + col
                 app_list = ["Master"] + list(self.apps.keys())
                 if 0 <= tapped_index < len(app_list):
+                    # Store previous selection
+                    prev_app = self.selected_app
+                    prev_x = None
+                    prev_y = None
+                    
+                    # If there was a previous selection, calculate its position
+                    if prev_app:
+                        prev_index = app_list.index(prev_app)
+                        prev_row = prev_index // GRID_COLS
+                        prev_col = prev_index % GRID_COLS
+                        prev_x = start_x + prev_col * cell_width
+                        prev_y = start_y + prev_row * cell_height
+                    
+                    # Update selection
                     self.selected_app = app_list[tapped_index]
                     self.logger.info(f"Selected app: {self.selected_app}")
-                    self.draw_full_ui()
+                    
+                    # Redraw previous selection if it exists
+                    if prev_app and prev_x is not None:
+                        if prev_app == "Master":
+                            self.draw_app_icon("Master", {"name": "Master", "volume": 100}, prev_x, prev_y, False)
+                        else:
+                            self.draw_app_icon(prev_app, self.apps[prev_app], prev_x, prev_y, False)
+                    
+                    # Draw new selection
+                    new_x = start_x + col * cell_width
+                    new_y = start_y + row * cell_height
+                    if self.selected_app == "Master":
+                        self.draw_app_icon("Master", {"name": "Master", "volume": 100}, new_x, new_y, True)
+                    else:
+                        self.draw_app_icon(self.selected_app, self.apps[self.selected_app], new_x, new_y, True)
+                    
+                    # Update center panel
+                    if self.selected_app == "Master":
+                        self.draw_center_panel("Master", 100)
+                    else:
+                        app_data = self.apps[self.selected_app]
+                        self.draw_center_panel(self.selected_app, app_data.get("volume", 0))
+                    
                     if self.touch_callback:
                         self.touch_callback('app_selected', self.selected_app)
                     
@@ -633,3 +686,34 @@ class UIManager:
                 self.led_pwm.duty_u16(0)
         except Exception as e:
             self.logger.error(f"UI cleanup error: {str(e)}")
+
+    def draw_app_icon(self, app_name, app_data, x, y, is_selected):
+        """Draw a single app icon and name"""
+        # Draw icon background
+        if is_selected:
+            self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_GRAY)
+            text_color = COLOR_BLACK
+        else:
+            self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_DARK_GRAY)
+            text_color = COLOR_WHITE
+        
+        # Draw icon if available
+        if app_name != "Master" and "icon" in app_data:
+            try:
+                # Center the 48x48 icon in the 60x60 space
+                icon_offset = (ICON_SIZE - 48) // 2
+                self.display.draw_icon(x + icon_offset, y + icon_offset, app_data["icon"])
+            except Exception as e:
+                self.logger.error(f"Error drawing icon for {app_name}: {str(e)}")
+        
+        # Process and draw app name
+        if app_name.lower().endswith('.exe'):
+            text = app_name[:-4]  # Remove .exe extension
+        else:
+            text = app_name
+            
+        if len(text) > 8:
+            text = text[:7] + '.'
+        text_width = len(text) * 6
+        text_x = x + (ICON_SIZE - text_width) // 2
+        self.display.draw_text(text_x, y + ICON_SIZE + 5, text, text_color, None)
