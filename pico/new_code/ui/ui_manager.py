@@ -221,7 +221,8 @@ class UIManager:
         # Draw Switch Device button at top (centered text)
         button_height = 30
         button_width = LEFT_PANEL_WIDTH - 10
-        text_width = 96  # Hardcoded width for "Switch Device" (12 chars * 8 pixels)
+        # Using similar ratio as media buttons (about 8-9 pixels per char)
+        text_width = 110  # "Switch Device" (12 chars * 8.5 pixels)
         button_x = 5
         text_x = button_x + (button_width - text_width) // 2
         self.display.fill_rect(button_x, 5, button_width, button_height, COLOR_DARK_GRAY)
@@ -250,10 +251,22 @@ class UIManager:
             # Draw icon background
             if app_name == self.selected_app:
                 self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_GRAY)
-                text_color = COLOR_BLACK
+                # Don't draw text for selected app
             else:
                 self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_DARK_GRAY)
-                text_color = COLOR_WHITE
+                # Draw app name (remove .exe and truncate if needed)
+                text = app_name
+                if text.lower().endswith('.exe'):
+                    text = text[:-4]
+                if len(text) > 8:
+                    text = text[:7] + '.'
+                    
+                # Calculate text width using 8 pixels per char
+                text_width = len(text) * 8
+                # Center text under icon
+                text_x = x + ((ICON_SIZE - text_width) // 2) - 2
+                text_y = y + ICON_SIZE + 5
+                self.display.draw_text(text_x, text_y, text, COLOR_WHITE, None)
             
             # Draw icon if available
             if app_name != "Master" and "icon" in app_data:
@@ -263,20 +276,6 @@ class UIManager:
                     self.display.draw_icon(x + icon_offset, y + icon_offset, app_data["icon"])
                 except Exception as e:
                     self.logger.error(f"Error drawing icon for {app_name}: {str(e)}")
-            
-            # Draw app name (remove .exe and truncate if needed)
-            text = app_name
-            if text.lower().endswith('.exe'):
-                text = text[:-4]
-            if len(text) > 8:
-                text = text[:7] + '.'
-                
-            # Calculate text width using 8 pixels per char
-            text_width = len(text) * 8
-            # Center text under icon
-            text_x = x + ((ICON_SIZE - text_width) // 2) - 2
-            text_y = y + ICON_SIZE + 5
-            self.display.draw_text(text_x, text_y, text, text_color, None)
         
     def draw_center_panel(self, app_name, volume):
         """Draw center panel with app name and volume"""
@@ -294,8 +293,8 @@ class UIManager:
         if app_name.lower().endswith('.exe'):
             app_name = app_name[:-4]  # Strip .exe extension
         
-        # Split into lines of maximum 12 characters
-        CHARS_PER_LINE = 12
+        # Split into lines of maximum 11 characters
+        CHARS_PER_LINE = 11
         lines = []
         remaining_text = app_name
         
@@ -310,7 +309,7 @@ class UIManager:
         # Limit to 3 lines maximum
         if len(lines) > 3:
             lines = lines[:2]
-            lines[1] = lines[1][:9] + "..."  # Adjusted for 12 char limit
+            lines[1] = lines[1][:8] + "..."  # Adjusted for 11 char limit
         
         # Calculate text block height and starting position
         line_height = 25  # Height of each line at scale 2
@@ -553,35 +552,60 @@ class UIManager:
                 if 0 <= tapped_index < len(app_list):
                     # Store previous selection
                     prev_app = self.selected_app
-                    prev_x = None
-                    prev_y = None
-                    
-                    # If there was a previous selection, calculate its position
-                    if prev_app:
-                        prev_index = app_list.index(prev_app)
-                        prev_row = prev_index // GRID_COLS
-                        prev_col = prev_index % GRID_COLS
-                        prev_x = start_x + prev_col * cell_width
-                        prev_y = start_y + prev_row * cell_height
                     
                     # Update selection
                     self.selected_app = app_list[tapped_index]
                     self.logger.info(f"Selected app: {self.selected_app}")
                     
-                    # Redraw previous selection if it exists
-                    if prev_app and prev_x is not None:
-                        if prev_app == "Master":
-                            self.draw_app_icon("Master", {"name": "Master", "volume": 100}, prev_x, prev_y, False)
-                        else:
-                            self.draw_app_icon(prev_app, self.apps[prev_app], prev_x, prev_y, False)
+                    # Calculate positions for both previous and new selections
+                    def get_app_position(app_name):
+                        if app_name not in app_list:
+                            return None
+                        idx = app_list.index(app_name)
+                        row = idx // GRID_COLS
+                        col = idx % GRID_COLS
+                        x = start_x + col * cell_width
+                        y = start_y + row * cell_height
+                        return (x, y)
                     
-                    # Draw new selection
-                    new_x = start_x + col * cell_width
-                    new_y = start_y + row * cell_height
-                    if self.selected_app == "Master":
-                        self.draw_app_icon("Master", {"name": "Master", "volume": 100}, new_x, new_y, True)
-                    else:
-                        self.draw_app_icon(self.selected_app, self.apps[self.selected_app], new_x, new_y, True)
+                    # Update previous selection if it exists
+                    if prev_app:
+                        prev_pos = get_app_position(prev_app)
+                        if prev_pos:
+                            x, y = prev_pos
+                            # Draw unselected state
+                            self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_DARK_GRAY)
+                            # Draw app name
+                            text = prev_app
+                            if text.lower().endswith('.exe'):
+                                text = text[:-4]
+                            if len(text) > 8:
+                                text = text[:7] + '.'
+                            text_width = len(text) * 8
+                            text_x = x + ((ICON_SIZE - text_width) // 2) - 2
+                            text_y = y + ICON_SIZE + 5
+                            self.display.draw_text(text_x, text_y, text, COLOR_WHITE, None)
+                            # Draw icon if available
+                            if prev_app != "Master" and "icon" in self.apps[prev_app]:
+                                try:
+                                    icon_offset = (ICON_SIZE - 48) // 2
+                                    self.display.draw_icon(x + icon_offset, y + icon_offset, self.apps[prev_app]["icon"])
+                                except Exception as e:
+                                    self.logger.error(f"Error drawing icon for {prev_app}: {str(e)}")
+                    
+                    # Update new selection
+                    new_pos = get_app_position(self.selected_app)
+                    if new_pos:
+                        x, y = new_pos
+                        # Draw selected state
+                        self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_GRAY)
+                        # Draw icon if available
+                        if self.selected_app != "Master" and "icon" in self.apps[self.selected_app]:
+                            try:
+                                icon_offset = (ICON_SIZE - 48) // 2
+                                self.display.draw_icon(x + icon_offset, y + icon_offset, self.apps[self.selected_app]["icon"])
+                            except Exception as e:
+                                self.logger.error(f"Error drawing icon for {self.selected_app}: {str(e)}")
                     
                     # Update center panel
                     if self.selected_app == "Master":
