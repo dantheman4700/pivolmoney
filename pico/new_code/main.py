@@ -79,8 +79,39 @@ def handle_touch(action, app_name=None):
         handle_media_control(action)
     elif action == 'app_selected' and app_name:
         logger.info(f"App selected: {app_name}")
-        # Handle app selection
-        pass
+        # Get current volume for the app
+        if comm_manager and app_name in comm_manager.apps:
+            volume = comm_manager.apps[app_name].get("volume", 50)
+            # Update encoder value to match current volume
+            if ui_manager and ui_manager.encoder:
+                ui_manager.encoder.set_value(volume)
+
+def handle_encoder(action, app_name=None, value=None):
+    """Handle encoder events"""
+    logger.info(f"Encoder event: {action} for {app_name} value={value}")
+    if not comm_manager:
+        return
+        
+    try:
+        if action == 'volume_change' and app_name:
+            # Send volume change command
+            command = {
+                "type": "set_volume",
+                "app": app_name,
+                "volume": value
+            }
+            comm_manager.send_message(command)
+            
+        elif action == 'toggle_mute' and app_name:
+            # Send mute toggle command
+            command = {
+                "type": "toggle_mute",
+                "app": app_name
+            }
+            comm_manager.send_message(command)
+            
+    except Exception as e:
+        logger.error(f"Error handling encoder event: {str(e)}")
 
 def main():
     global ui_manager, comm_manager
@@ -104,8 +135,9 @@ def main():
             logger.error("Failed to initialize communication")
             raise Exception("Communication initialization failed")
         
-        # Register touch callback
+        # Register callbacks
         ui_manager.register_touch_callback(handle_touch)
+        ui_manager.register_encoder_callback(handle_encoder)
         
         # Set initial state to simple media after everything is initialized
         ui_manager.set_state(UIState.SIMPLE_MEDIA)

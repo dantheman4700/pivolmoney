@@ -8,10 +8,12 @@ from core.config import (
     RIGHT_PANEL_WIDTH, ICON_SIZE, ICON_SPACING, GRID_COLS, GRID_ROWS,
     PIN_SPI_SCK, PIN_SPI_MOSI, PIN_SPI_MISO, PIN_DC, PIN_RST,
     PIN_CS, PIN_LED, PIN_TOUCH_SDA, PIN_TOUCH_SCL, PIN_TOUCH_INT,
-    PIN_TOUCH_RST, SPI_BAUDRATE, TOUCH_I2C_FREQ, CENTER_PANEL_WIDTH
+    PIN_TOUCH_RST, SPI_BAUDRATE, TOUCH_I2C_FREQ, CENTER_PANEL_WIDTH,
+    PIN_ROT_CLK, PIN_ROT_DT, PIN_ROT_SW
 )
 from drivers.ili9488 import ILI9488
 from drivers.ft6236 import FT6236
+from drivers.rotary import RotaryEncoder
 
 class UIManager:
     _instance = None
@@ -27,6 +29,7 @@ class UIManager:
         self.logger = get_logger()
         self.display = None
         self.touch = None
+        self.encoder = None
         self.led_pwm = None
         self.current_state = UIState.BOOT
         self.apps = {}
@@ -41,6 +44,8 @@ class UIManager:
         self.swipe_threshold = 50
         self.touch_callback = None
         self.encoder_callback = None
+        self.last_volume_update = time.ticks_ms()
+        self.volume_update_delay = 50  # 50ms between volume updates
         
     def initialize_hardware(self):
         """Initialize display and touch hardware"""
@@ -87,6 +92,16 @@ class UIManager:
                      freq=TOUCH_I2C_FREQ)
             
             self.touch = FT6236(i2c, PIN_TOUCH_SDA, PIN_TOUCH_SCL)
+            
+            # Initialize rotary encoder
+            self.encoder = RotaryEncoder(
+                PIN_ROT_CLK,
+                PIN_ROT_DT,
+                PIN_ROT_SW,
+                min_val=0,
+                max_val=100,
+                step=1
+            )
             
             # Clear screen and draw initial UI
             self.clear_screen()
@@ -702,6 +717,43 @@ class UIManager:
         # Handle any touch events
         self.handle_touch()
         
+        # Handle encoder events
+        if self.encoder and self.current_state == UIState.FULL_UI:
+            value_changed, button_pressed = self.encoder.read()
+            
+            if value_changed and self.selected_app:
+                current_time = time.ticks_ms()
+                if time.ticks_diff(current_time, self.last_volume_update) >= self.volume_update_delay:
+                    # Get current volume and send update
+                    volume = self.encoder.get_value()
+                    if self.encoder_callback:
+                        self.encoder_callback('volume_change', self.selected_app, volume)
+                    self.last_volume_update = current_time
+            
+            if button_pressed and self.selected_app:
+                # Toggle mute for the selected app
+                if self.encoder_callback:
+                    self.encoder_callback('toggle_mute', self.selected_app)
+
+    def handle_volume_update(self, app_name, volume):
+        """Handle volume update from PC"""
+        if app_name in self.apps:
+            self.apps[app_name]["volume"] = volume
+            # Update encoder value if this is the selected app
+            if app_name == self.selected_app:
+                self.encoder.set_value(volume)
+            # Redraw center panel if this is the selected app
+            if app_name == self.selected_app:
+                self.draw_center_panel(app_name, volume)
+
+    def handle_mute_update(self, app_name, muted):
+        """Handle mute update from PC"""
+        if app_name in self.apps:
+            self.apps[app_name]["muted"] = muted
+            # Redraw center panel if this is the selected app
+            if app_name == self.selected_app:
+                self.draw_center_panel(app_name, self.apps[app_name]["volume"])
+
     def cleanup(self):
         """Cleanup UI resources"""
         try:

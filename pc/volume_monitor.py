@@ -19,6 +19,7 @@ class VolumeMonitor:
         self.last_icon_send = 0
         self.icon_send_timeout = 1.0
         self.sent_icons = set()
+        print("VolumeMonitor initialized")
         
     def find_pico_com_port(self):
         """Find the COM port for the Pico device"""
@@ -278,9 +279,10 @@ class VolumeMonitor:
         """Handle incoming messages from Pico"""
         try:
             msg_type = data.get("type", "")
-            print(f"Processing message type: {msg_type}")
+            print(f"Processing message type: {msg_type} (initialized={self.initialized}, connected={self.connected})")
             
-            if msg_type == "request_apps" or msg_type == "ready":
+            if msg_type == "request_apps" or msg_type == "request_initial_config":
+                print("Handling initial config request")
                 app_volumes, icons = self.get_application_volumes()
                 
                 # Send app info first and wait for it to be processed
@@ -288,6 +290,10 @@ class VolumeMonitor:
                     "type": "initial_config",
                     "data": app_volumes
                 })
+                
+                # Initialize last_app_list to prevent duplicate app_changes
+                self.last_app_list = {app["name"]: app for app in app_volumes}
+                
                 time.sleep(0.5)
                 
                 # Then send each icon separately with proper framing
@@ -318,7 +324,16 @@ class VolumeMonitor:
                 self.send_message({
                     "type": "init_complete"
                 })
-                    
+
+            elif msg_type == "ready":
+                print(f"Received ready message, current state: initialized={self.initialized}, connected={self.connected}")
+                if not self.initialized:
+                    print("Device ready for updates - starting monitoring")
+                    self.initialized = True
+                    self.last_update = time.time() - self.update_interval  # Force immediate first check
+                else:
+                    print("Device confirmed ready state")
+
         except Exception as e:
             print(f"Error handling message: {e}")
             
@@ -363,10 +378,11 @@ class VolumeMonitor:
                     return
                     
             # Only send updates if we're fully initialized
-            if self.initialized:
+            if self.initialized and self.connected:
                 # Check for app changes
                 current_time = time.time()
                 if current_time - self.last_update >= self.update_interval:
+                    print(f"Checking for app changes... (initialized={self.initialized}, connected={self.connected})")
                     app_volumes, icons = self.get_application_volumes()
                     
                     # Convert to dict for easier comparison
@@ -382,18 +398,22 @@ class VolumeMonitor:
                     # Find added and updated apps
                     for name, app in current_apps.items():
                         if name not in self.last_app_list:
+                            print(f"New app found: {name}")
                             changes["added"].append(app)
                         elif (app["volume"] != self.last_app_list[name]["volume"] or 
                               app["muted"] != self.last_app_list[name]["muted"]):
+                            print(f"App updated: {name}")
                             changes["updated"].append(app)
                     
                     # Find removed apps
                     for name in self.last_app_list:
                         if name not in current_apps:
+                            print(f"App removed: {name}")
                             changes["removed"].append(name)
                     
                     # Send updates if there are any changes
                     if changes["added"] or changes["removed"] or changes["updated"]:
+                        print("Sending app changes...")
                         # Send app changes
                         if not self.send_message({
                             "type": "app_changes",
@@ -405,9 +425,8 @@ class VolumeMonitor:
                             self.disconnect()
                             return
                         
-                        # Update last app list
-                        self.last_app_list = current_apps
-                        
+                    # Always update last_app_list and timer
+                    self.last_app_list = current_apps
                     self.last_update = current_time
                     
             time.sleep(0.01)  # Small delay
@@ -458,94 +477,15 @@ class VolumeMonitor:
         return False
 
     def connect(self):
-        """Connect to Pico device and perform full initialization"""
+        """Connect to the Pico device"""
+        print("Attempting to connect...")
         if not self.find_pico_com_port():
             return False
             
-        try:
-            # Wait for config request
-            start_time = time.time()
-            while time.time() - start_time < 5:  # 5 second timeout
-                if self.serial.in_waiting:
-                    try:
-                        line = self.serial.readline().decode().strip()
-                        if line:
-                            data = json.loads(line)
-                            if data.get("type") == "request_initial_config":
-                                print("Received config request")
-                                # Get and send initial configuration
-                                app_volumes, icons = self.get_application_volumes()
-                                if not self.send_message({
-                                    "type": "initial_config",
-                                    "data": app_volumes
-                                }):
-                                    print("Failed to send initial config")
-                                    self.disconnect()
-                                    return False
-                                    
-                                # Send icons one by one
-                                for icon in icons:
-                                    if not icon.get("icon"):
-                                        continue
-                                        
-                                    # Skip if we've already sent this icon
-                                    if icon["name"] in self.sent_icons:
-                                        print(f"Skipping already sent icon for {icon['name']}")
-                                        continue
-                                        
-                                    success = self.send_message({
-                                        "type": "icon_data",
-                                        "app": icon["name"]
-                                    }, icon["icon"])
-                                    
-                                    if success:
-                                        print(f"Successfully sent icon for {icon['name']}")
-                                        self.sent_icons.add(icon["name"])
-                                    else:
-                                        print(f"Failed to send icon for {icon['name']}")
-                                        self.disconnect()
-                                        return False
-                                        
-                                    time.sleep(1.0)  # Delay between icons
-                                    
-                                # Send init complete
-                                if not self.send_message({"type": "init_complete"}):
-                                    print("Failed to send init complete")
-                                    self.disconnect()
-                                    return False
-                                    
-                                # Wait for ready response
-                                ready_start = time.time()
-                                while time.time() - ready_start < 5:
-                                    if self.serial.in_waiting:
-                                        try:
-                                            line = self.serial.readline().decode().strip()
-                                            if line:
-                                                data = json.loads(line)
-                                                if data.get("type") == "ready":
-                                                    print("Device ready for updates")
-                                                    self.initialized = True
-                                                    self.connected = True
-                                                    return True
-                                        except Exception as e:
-                                            print(f"Error processing ready response: {e}")
-                                    time.sleep(0.1)
-                                else:
-                                    print("Timeout waiting for ready response")
-                                    self.disconnect()
-                                    return False
-                    except Exception as e:
-                        print(f"Error processing config request: {e}")
-                time.sleep(0.1)
-            else:
-                print("No config request received")
-                self.disconnect()
-                return False
-                
-        except Exception as e:
-            print(f"Connection failed: {e}")
-            self.disconnect()
-            return False
+        # Just establish connection and wait for request_apps
+        self.connected = True
+        print("Connected to Pico, waiting for request_apps")
+        return True
 
 def main():
     monitor = VolumeMonitor()

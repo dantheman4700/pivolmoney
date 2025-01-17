@@ -280,7 +280,87 @@ class CommunicationManager:
                         
                 except Exception as e:
                     self.logger.error(f"Error processing initial config: {str(e)}")
-                    
+
+            elif msg_type == "volume_update":
+                app_name = data.get("app")
+                volume = data.get("volume")
+                if app_name and volume is not None:
+                    if app_name in self.apps:
+                        # Preserve icon if it exists
+                        if "icon" in self.apps[app_name]:
+                            icon_data = self.apps[app_name]["icon"]
+                            self.apps[app_name]["volume"] = volume
+                            self.apps[app_name]["icon"] = icon_data
+                        else:
+                            self.apps[app_name]["volume"] = volume
+                        # Update UI if we have a UI manager
+                        if self.ui_manager:
+                            self.ui_manager.handle_volume_update(app_name, volume)
+                    else:
+                        self.logger.warning(f"Volume update for unknown app: {app_name}")
+
+            elif msg_type == "mute_update":
+                app_name = data.get("app")
+                muted = data.get("muted")
+                if app_name and muted is not None:
+                    if app_name in self.apps:
+                        # Preserve icon if it exists
+                        if "icon" in self.apps[app_name]:
+                            icon_data = self.apps[app_name]["icon"]
+                            self.apps[app_name]["muted"] = muted
+                            self.apps[app_name]["icon"] = icon_data
+                        else:
+                            self.apps[app_name]["muted"] = muted
+                        # Update UI if we have a UI manager
+                        if self.ui_manager:
+                            self.ui_manager.handle_mute_update(app_name, muted)
+                    else:
+                        self.logger.warning(f"Mute update for unknown app: {app_name}")
+
+            elif msg_type == "app_changes":
+                added = data.get("added", [])
+                removed = data.get("removed", [])
+                updated = data.get("updated", [])
+                
+                # Handle added apps
+                for app in added:
+                    app_name = app.get("name")
+                    if app_name:
+                        self.apps[app_name] = app
+                
+                # Handle removed apps
+                for app_name in removed:
+                    if app_name in self.apps:
+                        del self.apps[app_name]
+                
+                # Handle updated apps
+                for app in updated:
+                    app_name = app.get("name")
+                    if app_name in self.apps:
+                        # Preserve icon if it exists
+                        if "icon" in self.apps[app_name]:
+                            icon_data = self.apps[app_name]["icon"]
+                            self.apps[app_name].update(app)
+                            self.apps[app_name]["icon"] = icon_data
+                        else:
+                            self.apps[app_name].update(app)
+                
+                # Update UI manager's app data and redraw only if needed
+                if self.ui_manager:
+                    self.ui_manager.apps = self.apps
+                    if added or removed:
+                        # Only redraw app list if apps were added/removed
+                        self.ui_manager.draw_app_list()
+                    elif updated:
+                        # For updates, only redraw center panel if selected app was updated
+                        for app in updated:
+                            if app.get("name") == self.ui_manager.selected_app:
+                                self.ui_manager.draw_center_panel(
+                                    app.get("name"),
+                                    app.get("volume", 0)
+                                )
+                                break
+
             elif msg_type == "icon_data_b64":
                 import binascii
                 app_name = data.get("app")
