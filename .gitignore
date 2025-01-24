@@ -28,7 +28,7 @@ var/
 # IDE
 .vscode/
 .idea/
-
+.micropico
 # Logs
 *.log
 hid.log
