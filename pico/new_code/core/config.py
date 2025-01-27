@@ -1,33 +1,33 @@
 from micropython import const
 
-# Display Pins
-PIN_SPI_SCK = const(18)    # Pin 7 on LCD
-PIN_SPI_MOSI = const(19)   # Pin 6 on LCD
-PIN_SPI_MISO = const(16)   # Pin 9 on LCD
-PIN_DC = const(20)         # Pin 5 on LCD
-PIN_RST = const(21)        # Pin 4 on LCD
-PIN_CS = const(17)         # Pin 3 on LCD
-PIN_LED = const(22)        # Pin 8 on LCD
+# Display Pins - Using RP2350 dedicated SPI1
+PIN_SPI_SCK = const(10)    # SPI1 SCK
+PIN_SPI_MOSI = const(11)   # SPI1 TX
+PIN_SPI_MISO = const(12)   # SPI1 RX
+PIN_DC = const(13)         # Data/Command
+PIN_RST = const(14)        # Reset
+PIN_CS = const(15)         # Chip Select
+PIN_LED = const(16)        # Backlight
 
-# Touch Controller Pins
-PIN_TOUCH_SDA = const(4)   # GP4
-PIN_TOUCH_SCL = const(5)   # GP5
-PIN_TOUCH_INT = const(6)   # GP6
-PIN_TOUCH_RST = const(7)   # GP7
+# Touch Controller Pins - Using RP2350 dedicated I2C0
+PIN_TOUCH_SDA = const(0)    # I2C0 SDA
+PIN_TOUCH_SCL = const(1)    # I2C0 SCL
+PIN_TOUCH_INT = const(2)    # Interrupt
+PIN_TOUCH_RST = const(3)    # Reset
 
 # Rotary Encoder Pins
-PIN_ROT_CLK = const(14)
-PIN_ROT_DT = const(15)
-PIN_ROT_SW = const(13)
+PIN_ROT_CLK = const(20)
+PIN_ROT_DT = const(21)
+PIN_ROT_SW = const(22)
 
 # Display Configuration
 DISPLAY_WIDTH = const(480)
 DISPLAY_HEIGHT = const(320)
 DISPLAY_ROTATION = const(0)
-SPI_BAUDRATE = const(62500000)  # 62.5MHz
+SPI_BAUDRATE = const(125000000)  # 125MHz for RP2350
 
 # Touch Configuration
-TOUCH_I2C_FREQ = const(100000)
+TOUCH_I2C_FREQ = const(400000)  # 400kHz I2C
 TOUCH_DEBOUNCE_MS = const(100)
 
 # Rotary Encoder Configuration

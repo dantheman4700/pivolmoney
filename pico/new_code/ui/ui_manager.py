@@ -56,7 +56,7 @@ class UIManager:
             self.led_pwm.duty_u16(self.current_brightness)
             
             # Initialize SPI for display
-            spi = SPI(0,
+            spi = SPI(1,
                      baudrate=SPI_BAUDRATE,
                      polarity=0,
                      phase=0,

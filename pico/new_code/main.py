@@ -1,10 +1,12 @@
 import gc
 import time
-import rp2
 import sys
-from machine import Pin, Timer
+from machine import Pin, Timer, reset
 from core.logger import get_logger
-from core.config import UIState, DISPLAY_WIDTH, DISPLAY_HEIGHT
+from core.config import (
+    UIState, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+    PIN_ROT_SW  # Add rotary switch pin
+)
 from ui.ui_manager import UIManager
 from communication.communication import CommunicationManager
 from communication.media_control import MediaHIDInterface
@@ -24,31 +26,37 @@ def handle_interrupt(cleanup=True):
             comm_manager.cleanup()
     sys.exit(0)
 
-def wait_for_bootsel():
-    """Wait for BOOTSEL button press with interrupt handling"""
-    logger.info("Starting BOOTSEL button test...")
-    
-    # Initial state
-    last_state = rp2.bootsel_button()
-    debounce_time = 50  # 50ms debounce
-    last_change = time.ticks_ms()
+def wait_for_button():
+    """Wait for rotary encoder button press with interrupt handling"""
+    logger.info("Waiting for rotary button press to start...")
     
     try:
+        # Initialize rotary button with pull-up
+        button = Pin(PIN_ROT_SW, Pin.IN, Pin.PULL_UP)
+        
+        # Initial state
+        last_state = button.value()
+        debounce_time = 50  # 50ms debounce
+        last_change = time.ticks_ms()
+        
         while True:
-            current_state = rp2.bootsel_button()
+            current_state = button.value()
             current_time = time.ticks_ms()
             
             # Only process state changes after debounce period
             if current_state != last_state and time.ticks_diff(current_time, last_change) > debounce_time:
-                if current_state:  # Button pressed
-                    logger.info("BOOTSEL pressed - Starting volume control")
+                if current_state == 0:  # Button pressed (active low with pull-up)
+                    logger.info("Rotary button pressed - Starting volume control")
                     return True
                 last_state = current_state
                 last_change = current_time
                 
             time.sleep_ms(10)
     except KeyboardInterrupt:
-        logger.info("Interrupted during BOOTSEL wait")
+        logger.info("Interrupted during button wait")
+        return False
+    except Exception as e:
+        logger.error(f"Error in button detection: {str(e)}")
         return False
 
 def handle_media_control(action):
@@ -118,8 +126,8 @@ def main():
     logger.info("Starting application")
     
     try:
-        # Wait for BOOTSEL or interrupt
-        if not wait_for_bootsel():
+        # Wait for rotary button press or interrupt
+        if not wait_for_button():
             logger.info("Exiting due to interrupt during startup")
             return
             

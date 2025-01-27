@@ -5,7 +5,7 @@ from drivers.font8x8 import font8x8
 from core.logger import get_logger
 from core.config import (
     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_ROTATION,
-    SPI_BAUDRATE, COLOR_BLACK
+    SPI_BAUDRATE, COLOR_BLACK, PIN_SPI_SCK, PIN_SPI_MOSI, PIN_SPI_MISO
 )
 
 # ILI9488 Commands
@@ -26,20 +26,28 @@ def color565(r, g, b):
 class ILI9488:
     def __init__(self, spi, dc, cs, rst, width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
         self.logger = get_logger()
-        self.spi = spi
+        
+        # Store pin references
         self.dc = dc
         self.cs = cs
         self.rst = rst
+        
+        # Use hardware SPI1 for RP2350
+        if not spi:
+            self.spi = SPI(1,
+                          baudrate=SPI_BAUDRATE,
+                          polarity=0,
+                          phase=0,
+                          bits=8,
+                          firstbit=SPI.MSB,
+                          sck=Pin(PIN_SPI_SCK),
+                          mosi=Pin(PIN_SPI_MOSI),
+                          miso=Pin(PIN_SPI_MISO))
+        else:
+            self.spi = spi
+            
         self.width = width
         self.height = height
-        
-        # Initialize pins (no need to reinitialize as they're already set up)
-        # Just store the references
-        self.dc = dc
-        self.cs = cs
-        self.rst = rst
-        
-        # No need to reinitialize SPI as it's already set up
         
         self.reset()
         self.init()

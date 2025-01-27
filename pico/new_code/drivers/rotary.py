@@ -3,17 +3,27 @@ import time
 from core.logger import get_logger
 from core.config import (
     ENCODER_MIN_VAL, ENCODER_MAX_VAL, ENCODER_STEP,
-    ENCODER_DEBOUNCE_MS
+    ENCODER_DEBOUNCE_MS, PIN_ROT_CLK, PIN_ROT_DT, PIN_ROT_SW
 )
 
 class RotaryEncoder:
-    def __init__(self, clk_pin, dt_pin, sw_pin, min_val=ENCODER_MIN_VAL, 
+    def __init__(self, clk_pin=None, dt_pin=None, sw_pin=None, min_val=ENCODER_MIN_VAL, 
                  max_val=ENCODER_MAX_VAL, step=ENCODER_STEP, value=0, debug=False):
         """Initialize Rotary Encoder with specified pins and range"""
         self.logger = get_logger()
+        
+        # Use default pins if none provided
+        if clk_pin is None:
+            clk_pin = PIN_ROT_CLK
+        if dt_pin is None:
+            dt_pin = PIN_ROT_DT
+        if sw_pin is None:
+            sw_pin = PIN_ROT_SW
+            
+        # Initialize pins with pull-ups for CLK and DT, but not SW
         self.clk = Pin(clk_pin, Pin.IN, Pin.PULL_UP)
         self.dt = Pin(dt_pin, Pin.IN, Pin.PULL_UP)
-        self.sw = Pin(sw_pin, Pin.IN, Pin.PULL_UP)
+        self.sw = Pin(sw_pin, Pin.IN)  # No pull-up for SW as it's directly connected
         
         self.min_val = min_val
         self.max_val = max_val

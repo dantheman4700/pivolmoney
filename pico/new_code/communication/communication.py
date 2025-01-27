@@ -2,6 +2,8 @@ import json
 import time
 import sys
 import select
+from usb.device.cdc import CDCInterface  # Changed import
+import usb.device
 from core.logger import get_logger
 from core.config import (
     SERIAL_BUFFER_SIZE, SERIAL_TIMEOUT_MS, RECONNECT_DELAY_MS,
@@ -34,7 +36,7 @@ class CommunicationManager:
         self.icon_callback = None
         self.last_heartbeat = time.ticks_ms()
         self.poll = select.poll()
-        self.poll.register(sys.stdin, select.POLLIN)
+        self.cdc = None  # Will be initialized later
         self.expected_icons = 0  # Track how many icons we expect
         self.received_icons = 0  # Track how many icons we've received
         self.processing_icon = False  # Flag to prevent duplicate icon processing
@@ -53,15 +55,33 @@ class CommunicationManager:
             from ui.ui_manager import UIManager
             self.ui_manager = UIManager.get_instance()
             
-            # Initialize HID interface first
+            # Create interfaces but don't initialize yet
             self.media_control = MediaControlHID.get_instance()
+            self.cdc = CDCInterface()
+            self.cdc.init(timeout=0)  # Non-blocking mode
+            
+            # Initialize USB device with both interfaces
+            usb.device.get().init(self.cdc, builtin_driver=True)
+            
+            # Wait for USB host to configure the interfaces
+            self.logger.info("Waiting for USB host to configure interfaces...")
+            timeout = time.ticks_add(time.ticks_ms(), 5000)  # 5 second timeout
+            
+            while not self.cdc.is_open():
+                if time.ticks_diff(time.ticks_ms(), timeout) >= 0:
+                    self.logger.error("Timeout waiting for interfaces")
+                    return False
+                time.sleep_ms(100)
+            
+            self.logger.info("CDC interface configured successfully")
+            
+            # Now initialize HID interface
             if not self.media_control.initialize():
                 self.logger.error("Failed to initialize HID interface")
                 return False
             
-            # Clear any pending data from REPL
-            while self.poll.poll(0):  # Non-blocking poll
-                sys.stdin.read(1)
+            # Register CDC interface with poll
+            self.poll.register(self.cdc, select.POLLIN)
             
             self.logger.info("All interfaces initialized successfully")
             self.hardware_initialized = True
@@ -72,146 +92,27 @@ class CommunicationManager:
             return False
             
     def read_line(self):
-        """Read a complete line from REPL"""
-        if not self.hardware_initialized:
+        """Read a line from CDC interface"""
+        if not self.hardware_initialized or not self.cdc:
             return None
             
         try:
-            # Check if there's data available
-            if self.poll.poll(0):  # Non-blocking poll
-                # Read one byte at a time
-                line = bytearray()
-                while True:
-                    if not self.poll.poll(0):
-                        time.sleep_ms(1)
-                        continue
-                        
-                    byte = sys.stdin.read(1)
-                    if byte == '\x03':  # Ctrl+C
-                        self.logger.info("Received keyboard interrupt")
-                        raise KeyboardInterrupt
-                    
-                    # For normal messages, accumulate until newline
-                    # Skip any REPL output (lines starting with >>>)
-                    if byte == '>':
-                        # Skip the rest of the REPL prompt
-                        while byte != '\n' and self.poll.poll(0):
-                            byte = sys.stdin.read(1)
-                        continue
-                        
-                    line.extend(byte.encode())
-                    if byte == '\n':
-                        break
-                    
-                try:
-                    # Only try to decode as string if we have a complete line
-                    line_str = line.decode().strip()
-                    if not line_str:
-                        return None
-                        
-                    try:
-                        data = json.loads(line_str)
-                        self.logger.info(f"Valid message received: {line_str}")
-                        
-                        # Handle base64 encoded icon data
-                        if data.get("type") == "icon_data_b64":
-                            import binascii
-                            app_name = data.get("app")
-                            b64_data = data.get("data")
-                            
-                            if app_name and b64_data and app_name in self.apps and not self.processing_icon:
-                                self.processing_icon = True  # Set processing flag
-                                try:
-                                    # Decode base64 data using binascii
-                                    icon_data = binascii.a2b_base64(b64_data)
-                                    self.logger.info(f"Decoded icon data for {app_name}, size: {len(icon_data)} bytes")
-                                    
-                                    # Verify size is correct (48x48x2 = 4608 bytes)
-                                    if len(icon_data) != 4608:
-                                        raise ValueError(f"Invalid icon size: {len(icon_data)} bytes")
-                                    
-                                    # Store the icon data
-                                    self.apps[app_name]["icon"] = icon_data
-                                    # Update UI manager's app data
-                                    if self.ui_manager:
-                                        self.ui_manager.apps[app_name]["icon"] = icon_data
-                                    self.received_icons += 1
-                                    self.logger.info(f"Received {self.received_icons}/{self.expected_icons} icons")
-                                    
-                                    # Send confirmation
-                                    confirm = {
-                                        "type": "icon_parsed",
-                                        "app": app_name,
-                                        "status": "ok"
-                                    }
-                                    self.send_message(confirm)
-                                except Exception as e:
-                                    self.logger.error(f"Error decoding icon data: {str(e)}")
-                                    # Send error confirmation
-                                    error = {
-                                        "type": "icon_parsed",
-                                        "app": app_name,
-                                        "status": "error",
-                                        "error": str(e)
-                                    }
-                                    self.send_message(error)
-                                finally:
-                                    self.processing_icon = False  # Clear processing flag
-                            return None
-                            
-                        elif data.get("type") == "icon_data":
-                            # Only process if not already processing an icon and we haven't received this icon yet
-                            app_name = data.get("app")
-                            if (app_name and app_name in self.apps and 
-                                not self.processing_icon and 
-                                not self.apps[app_name].get("icon")):  # Check if we already have the icon
-                                
-                                self.processing_icon = True
-                                try:
-                                    # Send ready for icon message
-                                    self.current_icon_app = app_name
-                                    self.logger.info(f"Starting icon data reception for {self.current_icon_app}")
-                                    ready = {
-                                        "type": "ready_for_icon",
-                                        "app": self.current_icon_app
-                                    }
-                                    self.send_message(ready)
-                                finally:
-                                    self.processing_icon = False
-                            else:
-                                if self.processing_icon:
-                                    self.logger.info("Already processing an icon, skipping request")
-                                elif app_name not in self.apps:
-                                    self.logger.warning(f"Received icon data for unknown app: {app_name}")
-                                elif self.apps[app_name].get("icon"):
-                                    self.logger.info(f"Already have icon for {app_name}, skipping request")
-                            return None
-                            
-                        return line_str
-                        
-                    except (ValueError, JSONDecodeError) as e:
-                        # Only log error if it's not binary data
-                        if not any(b > 127 for b in line):
-                            self.logger.error(f"Invalid JSON message: {line_str[:100]}")
-                except Exception as e:
-                    self.logger.error(f"Invalid message: {str(e)}")
-            
-        except KeyboardInterrupt:
-            raise
+            if self.poll.poll(SERIAL_TIMEOUT_MS):
+                return self.cdc.readline().decode().strip()
+            return None
         except Exception as e:
-            self.logger.debug(f"Read error: {str(e)}")
-            
-        return None
+            self.logger.error(f"Error reading line: {str(e)}")
+            return None
         
     def send_message(self, data):
-        """Send message through REPL"""
-        if not self.hardware_initialized:
+        """Send message through CDC interface"""
+        if not self.hardware_initialized or not self.cdc:
             self.logger.error("Cannot send message - not initialized")
             return False
-        
+            
         try:
             message = json.dumps(data) + '\n'
-            print(message, end='')  # Use print instead of sys.stdout for REPL
+            self.cdc.write(message.encode())
             self.logger.debug(f"Sent message: {message.strip()}")
             return True
             
@@ -488,6 +389,6 @@ class CommunicationManager:
         """Cleanup resources"""
         try:
             if self.poll:
-                self.poll.unregister(sys.stdin)
+                self.poll.unregister(self.cdc)
         except Exception as e:
-            self.logger.error(f"Cleanup error: {str(e)}") 
+            self.logger.error(f"Cleanup error: {str(e)}")

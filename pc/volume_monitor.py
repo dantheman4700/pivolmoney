@@ -40,7 +40,7 @@ class VolumeMonitor:
                     return True
             
         # If not found or none worked, try COM7 as fallback
-        self.com_port = "COM7"
+        self.com_port = "COM10"
         print(f"Using fallback Pico CDC on {self.com_port}")
         return self.try_connect()
         

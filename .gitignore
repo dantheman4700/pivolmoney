@@ -3,6 +3,8 @@
 /old_code/
 old_code/
 /pc/venv/
+/old_code/
+old_code/
 # Python
 __pycache__/
 *.py[cod]

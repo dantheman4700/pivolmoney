@@ -1,7 +1,10 @@
 from machine import Pin, I2C
 import time
 from core.logger import get_logger
-from core.config import TOUCH_I2C_FREQ, TOUCH_DEBOUNCE_MS
+from core.config import (
+    TOUCH_I2C_FREQ, TOUCH_DEBOUNCE_MS,
+    PIN_TOUCH_SDA, PIN_TOUCH_SCL
+)
 
 # FT6236 I2C address
 TOUCH_I2C_ADDR = const(0x38)
@@ -18,10 +21,19 @@ REG_P1_WEIGHT = const(0x07)
 REG_P1_MISC = const(0x08)
 
 class FT6236:
-    def __init__(self, i2c, sda_pin, scl_pin):
+    def __init__(self, i2c=None, sda_pin=None, scl_pin=None):
         """Initialize touch controller with I2C pins"""
         self.logger = get_logger()
-        self.i2c = i2c
+        
+        # Use hardware I2C0 for RP2350
+        if not i2c:
+            self.i2c = I2C(0,
+                          scl=Pin(PIN_TOUCH_SCL),
+                          sda=Pin(PIN_TOUCH_SDA),
+                          freq=TOUCH_I2C_FREQ)
+        else:
+            self.i2c = i2c
+            
         self.address = TOUCH_I2C_ADDR
         self.last_touch_state = False
         self.last_touch_time = 0
