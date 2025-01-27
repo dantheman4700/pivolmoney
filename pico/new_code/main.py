@@ -1,6 +1,7 @@
 import gc
 import time
 import sys
+import json
 from machine import Pin, Timer, reset
 from core.logger import get_logger
 from core.config import (
@@ -8,22 +9,21 @@ from core.config import (
     PIN_ROT_SW  # Add rotary switch pin
 )
 from ui.ui_manager import UIManager
-from communication.communication import CommunicationManager
-from communication.media_control import MediaHIDInterface
+from communication.usb_manager import USBManager
 
 logger = get_logger()
 ui_manager = None
-comm_manager = None
+usb_manager = None
 
 def handle_interrupt(cleanup=True):
     """Handle keyboard interrupt gracefully"""
-    global ui_manager, comm_manager
+    global ui_manager, usb_manager
     if cleanup:
         logger.info("Received interrupt - cleaning up")
         if ui_manager:
             ui_manager.cleanup()
-        if comm_manager:
-            comm_manager.cleanup()
+        if usb_manager:
+            usb_manager.cleanup()
     sys.exit(0)
 
 def wait_for_button():
@@ -62,19 +62,19 @@ def wait_for_button():
 def handle_media_control(action):
     """Handle media control actions"""
     logger.info(f"Media control action: {action}")
-    if comm_manager and comm_manager.media_control:
+    if usb_manager and usb_manager.is_ready():
         try:
             if action == 'play':
-                success = comm_manager.media_control.send_media_control(MediaHIDInterface.PLAY_PAUSE)
+                success = usb_manager.send_media_control(USBManager.PLAY_PAUSE)
                 logger.info(f"PLAY_PAUSE command {'sent' if success else 'failed'}")
             elif action == 'prev':
-                success = comm_manager.media_control.send_media_control(MediaHIDInterface.PREV_TRACK)
+                success = usb_manager.send_media_control(USBManager.PREV_TRACK)
                 logger.info(f"PREV_TRACK command {'sent' if success else 'failed'}")
             elif action == 'next':
-                success = comm_manager.media_control.send_media_control(MediaHIDInterface.NEXT_TRACK)
+                success = usb_manager.send_media_control(USBManager.NEXT_TRACK)
                 logger.info(f"NEXT_TRACK command {'sent' if success else 'failed'}")
             elif action == 'mute':
-                success = comm_manager.media_control.send_media_control(MediaHIDInterface.MUTE)
+                success = usb_manager.send_media_control(USBManager.MUTE)
                 logger.info(f"MUTE command {'sent' if success else 'failed'}")
             return success
         except Exception as e:
@@ -88,104 +88,70 @@ def handle_touch(action, app_name=None):
     elif action == 'app_selected' and app_name:
         logger.info(f"App selected: {app_name}")
         # Get current volume for the app
-        if comm_manager and app_name in comm_manager.apps:
-            volume = comm_manager.apps[app_name].get("volume", 50)
+        if usb_manager and app_name in usb_manager.apps:
+            volume = usb_manager.apps[app_name].get("volume", 50)
             # Update encoder value to match current volume
             if ui_manager and ui_manager.encoder:
                 ui_manager.encoder.set_value(volume)
 
-def handle_encoder(action, app_name=None, value=None):
-    """Handle encoder events"""
-    logger.info(f"Encoder event: {action} for {app_name} value={value}")
-    if not comm_manager:
-        return
-        
-    try:
-        if action == 'volume_change' and app_name:
-            # Send volume change command
-            command = {
-                "type": "set_volume",
-                "app": app_name,
-                "volume": value
-            }
-            comm_manager.send_message(command)
-            
-        elif action == 'toggle_mute' and app_name:
-            # Send mute toggle command
-            command = {
-                "type": "toggle_mute",
-                "app": app_name
-            }
-            comm_manager.send_message(command)
-            
-    except Exception as e:
-        logger.error(f"Error handling encoder event: {str(e)}")
-
 def main():
-    global ui_manager, comm_manager
-    logger.info("Starting application")
+    """Main application entry point"""
+    global ui_manager, usb_manager
     
     try:
-        # Wait for rotary button press or interrupt
-        if not wait_for_button():
-            logger.info("Exiting due to interrupt during startup")
+        # Initialize USB manager first
+        usb_manager = USBManager()  # Create instance
+        usb_manager = USBManager.get_instance()  # Get singleton instance
+        
+        # Initialize UI manager
+        ui_manager = UIManager()  # Create instance
+        ui_manager = UIManager.get_instance()  # Get singleton instance
+        
+        # Initialize USB device first
+        if not usb_manager.initialize():
+            logger.error("Failed to initialize USB device")
+            handle_interrupt(cleanup=True)
             return
             
-        # Initialize UI manager first
-        ui_manager = UIManager()
+        # Then initialize UI hardware
         if not ui_manager.initialize_hardware():
             logger.error("Failed to initialize UI")
-            raise Exception("UI initialization failed")
-        
-        # Initialize communication manager
-        comm_manager = CommunicationManager()
-        if not comm_manager.initialize():
-            logger.error("Failed to initialize communication")
-            raise Exception("Communication initialization failed")
-        
-        # Register callbacks
-        ui_manager.register_touch_callback(handle_touch)
-        ui_manager.register_encoder_callback(handle_encoder)
-        
-        # Set initial state to simple media after everything is initialized
+            handle_interrupt(cleanup=True)
+            return
+            
+        # Set UI state to simple media controls
         ui_manager.set_state(UIState.SIMPLE_MEDIA)
         
-        logger.info("Hardware initialized - starting main loop")
+        # Set up UI manager's touch callback
+        ui_manager.touch_callback = handle_touch
         
-        # Main loop with interrupt handling
+        # Main loop
         while True:
-            try:
-                # Update communication
-                comm_manager.update()
-                
-                # Update UI
-                ui_manager.update()
-                
-                # Run garbage collection
-                gc.collect()
-                
-                # Small delay to prevent tight loop
-                time.sleep_ms(10)
-                
-            except KeyboardInterrupt:
-                logger.info("Received interrupt in main loop")
-                handle_interrupt()
-                break
-            except Exception as e:
-                logger.error(f"Error in main loop: {str(e)}")
-                time.sleep(1)  # Delay before retry
-                
+            # Process any incoming messages
+            line = usb_manager.read_line()
+            if line:
+                try:
+                    data = json.loads(line)
+                    usb_manager.handle_message(data)
+                except Exception as e:
+                    logger.error(f"Error processing message: {str(e)}")
+            
+            # Let the system breathe
+            time.sleep_ms(10)
+            
     except KeyboardInterrupt:
         handle_interrupt()
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
-    finally:
-        handle_interrupt(cleanup=True)
+        handle_interrupt()
 
 if __name__ == "__main__":
     try:
-        main()
-    except KeyboardInterrupt:
-        handle_interrupt()
+        # Wait for rotary button press to start
+        if wait_for_button():
+            main()
+        else:
+            handle_interrupt(cleanup=False)
     except Exception as e:
-        logger.error(f"Unhandled error: {str(e)}") 
+        logger.error(f"Fatal error: {str(e)}")
+        handle_interrupt() 

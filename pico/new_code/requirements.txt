@@ -1,0 +1,3 @@
+usb-device
+usb-device-cdc
+usb-device-hid

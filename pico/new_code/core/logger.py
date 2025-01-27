@@ -125,7 +125,7 @@ class Logger:
 # Create global logger instance
 _logger = None
 
-def get_logger():
+def get_logger(module_name=None):
     """Get or create global logger instance"""
     global _logger
     if _logger is None:
