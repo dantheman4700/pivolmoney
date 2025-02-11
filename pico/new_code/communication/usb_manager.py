@@ -12,8 +12,10 @@ try:
 except ImportError:
     JSONDecodeError = ValueError  # Use ValueError as fallback
 
+
 class MediaHIDInterface(HIDInterface):
     """HID interface for media controls"""
+
     def __init__(self):
         # HID Report descriptor for consumer control
         report_descriptor = bytes([
@@ -35,12 +37,12 @@ class MediaHIDInterface(HIDInterface):
             0x81, 0x01,        # Input (Constant)       - 2 padding bits
             0xC0               # End Collection
         ])
-        
+
         super().__init__(
             report_descriptor=report_descriptor,
             interface_str="MicroPython Media Controls"
         )
-        
+
     def send_control(self, control, duration_ms=100):
         """Send a media control command with automatic release"""
         try:
@@ -52,18 +54,19 @@ class MediaHIDInterface(HIDInterface):
             print(f"Error sending control: {str(e)}")
             return False
 
+
 class USBManager:
     """Singleton class to manage USB device with CDC and HID interfaces"""
     _instance = None
-    
+
     # Control bit masks for HID media controls
-    MUTE =        0b00000001  # Bit 0
-    VOL_UP =      0b00000010  # Bit 1
-    VOL_DOWN =    0b00000100  # Bit 2
-    PLAY_PAUSE =  0b00001000  # Bit 3
-    NEXT_TRACK =  0b00010000  # Bit 4
-    PREV_TRACK =  0b00100000  # Bit 5
-    
+    MUTE = 0b00000001  # Bit 0
+    VOL_UP = 0b00000010  # Bit 1
+    VOL_DOWN = 0b00000100  # Bit 2
+    PLAY_PAUSE = 0b00001000  # Bit 3
+    NEXT_TRACK = 0b00010000  # Bit 4
+    PREV_TRACK = 0b00100000  # Bit 5
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(USBManager, cls).__new__(cls)
@@ -77,7 +80,8 @@ class USBManager:
             cls._instance.apps = {}  # Dictionary to store app information
             cls._instance.expected_icons = 0  # Track how many icons we expect
             cls._instance.received_icons = 0  # Track how many icons we've received
-            cls._instance.processing_icon = False  # Flag to prevent duplicate icon processing
+            # Flag to prevent duplicate icon processing
+            cls._instance.processing_icon = False
             cls._instance.ui_manager = None  # Reference to UI manager
         return cls._instance
 
@@ -86,28 +90,35 @@ class USBManager:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
     def initialize(self):
         """Initialize USB device with CDC and HID interfaces"""
         try:
             # Reset state
             self.initialized = False
             self.input_buffer = bytearray()
-            
+
             # Create interfaces first without initializing
             self.cdc = CDCInterface()
             self.hid = MediaHIDInterface()
-            
+
             # Initialize CDC with non-blocking timeout
             self.cdc.init(timeout=0)
-            
-            # Get USB device singleton
+
+            # Get USB device singleton and set descriptors for composite device
             device = usb.device.get()
-            
+            device.device_class = 0xEF      # Multi-interface Function
+            device.device_subclass = 0x02   # USB Common Sub Class
+            device.device_protocol = 0x01   # USB IAD Protocol
+            device.max_packet_len = 0x40    # 64 bytes
+            device.vid = 0x2E8A  # Raspberry Pi VID
+            device.pid = 0x0005  # Your PID
+            device.manufacturer = "MicroPython"
+            device.product = "Board in FS mode"
+
             # Initialize device with both interfaces and keep built-in driver
-            # Pass interfaces directly as arguments, not as a keyword
             device.init(self.cdc, self.hid, builtin_driver=True)
-            
+
             # Wait for interfaces to be ready
             timeout = time.ticks_add(time.ticks_ms(), 2000)  # 2 second timeout
             while not (self.cdc.is_open() and self.hid.is_open()):
@@ -115,25 +126,25 @@ class USBManager:
                     self.logger.error("Timeout waiting for interfaces")
                     return False
                 time.sleep_ms(50)
-            
+
             # Duplicate REPL to new CDC interface for second COM port
             import os
             os.dupterm(self.cdc)
-            
+
             self.logger.info("All interfaces configured successfully")
             self.initialized = True
             self.logger.info("USB device initialized successfully")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to initialize USB device: {str(e)}")
             return False
-    
+
     def read_line(self):
         """Read a line from CDC interface"""
         if not self.initialized or not self.cdc:
             return None
-            
+
         try:
             # Check if data is available
             # CDC read requires max_length parameter
@@ -141,7 +152,7 @@ class USBManager:
             if data:
                 # Add to input buffer
                 self.input_buffer.extend(data)
-                
+
                 # Check for newline
                 try:
                     nl_idx = self.input_buffer.index(b'\n'[0])
@@ -156,13 +167,13 @@ class USBManager:
         except Exception as e:
             self.logger.error(f"Error reading line: {str(e)}")
             return None
-    
+
     def send_message(self, data):
         """Send message through CDC interface"""
         if not self.initialized or not self.cdc:
             self.logger.error("Cannot send message - not initialized")
             return False
-            
+
         try:
             message = json.dumps(data) + '\n'
             # Write to CDC interface
@@ -173,26 +184,26 @@ class USBManager:
             else:
                 self.logger.warning("No bytes sent")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"Failed to send message: {str(e)}")
             return False
-    
+
     def send_media_control(self, control, duration_ms=100):
         """Send a media control command with automatic release"""
         if not self.initialized or not self.hid:
             return False
-            
+
         try:
             return self.hid.send_control(control, duration_ms)
         except Exception as e:
             self.logger.error(f"Error sending media control: {str(e)}")
             return False
-    
+
     def is_ready(self):
         """Check if USB device is initialized and ready"""
         return self.initialized and self.cdc and self.hid and self.cdc.is_open() and self.hid.is_open()
-    
+
     def cleanup(self):
         """Clean up resources"""
         try:
@@ -201,13 +212,13 @@ class USBManager:
             self.hid = None
         except Exception as e:
             self.logger.error(f"Error during cleanup: {str(e)}")
-    
+
     def handle_message(self, data):
         """Handle incoming messages"""
         try:
             msg_type = data.get("type", "")
             self.logger.info(f"Processing message type: {msg_type}")
-            
+
             if msg_type == "test":
                 self.logger.info("Received test message, sending response")
                 response = {
@@ -227,7 +238,7 @@ class USBManager:
                         self.logger.error("Failed to request initial config")
                 else:
                     self.logger.error("Failed to send test response")
-                
+
             elif msg_type == "initial_config":
                 self.logger.info("Received initial config")
                 try:
@@ -235,7 +246,7 @@ class USBManager:
                     new_apps = {}
                     self.expected_icons = 0
                     seen_apps = set()  # Track unique apps
-                    
+
                     for app in data.get("data", []):
                         app_name = app.get("name")
                         if app_name and app_name not in seen_apps:  # Only process unique apps
@@ -243,11 +254,12 @@ class USBManager:
                             new_apps[app_name] = app
                             if app.get("has_icon", False):
                                 self.expected_icons += 1
-                    
+
                     self.apps = new_apps
                     self.received_icons = 0  # Reset received icons counter
-                    self.logger.info(f"Processed {len(self.apps)} unique apps from initial config, expecting {self.expected_icons} icons")
-                    
+                    self.logger.info(
+                        f"Processed {len(self.apps)} unique apps from initial config, expecting {self.expected_icons} icons")
+
                     # Send confirmation
                     confirm = {
                         "type": "config_received",
@@ -256,10 +268,11 @@ class USBManager:
                     }
                     if not self.send_message(confirm):
                         self.logger.error("Failed to send config confirmation")
-                        
+
                 except Exception as e:
-                    self.logger.error(f"Error processing initial config: {str(e)}")
-            
+                    self.logger.error(
+                        f"Error processing initial config: {str(e)}")
+
             elif msg_type == "volume_update":
                 app_name = data.get("app")
                 volume = data.get("volume")
@@ -274,10 +287,12 @@ class USBManager:
                             self.apps[app_name]["volume"] = volume
                         # Update UI if we have a UI manager
                         if self.ui_manager:
-                            self.ui_manager.handle_volume_update(app_name, volume)
+                            self.ui_manager.handle_volume_update(
+                                app_name, volume)
                     else:
-                        self.logger.warning(f"Volume update for unknown app: {app_name}")
-            
+                        self.logger.warning(
+                            f"Volume update for unknown app: {app_name}")
+
             elif msg_type == "mute_update":
                 app_name = data.get("app")
                 muted = data.get("muted")
@@ -294,24 +309,25 @@ class USBManager:
                         if self.ui_manager:
                             self.ui_manager.handle_mute_update(app_name, muted)
                     else:
-                        self.logger.warning(f"Mute update for unknown app: {app_name}")
-            
+                        self.logger.warning(
+                            f"Mute update for unknown app: {app_name}")
+
             elif msg_type == "app_changes":
                 added = data.get("added", [])
                 removed = data.get("removed", [])
                 updated = data.get("updated", [])
-                
+
                 # Handle added apps
                 for app in added:
                     app_name = app.get("name")
                     if app_name:
                         self.apps[app_name] = app
-                
+
                 # Handle removed apps
                 for app_name in removed:
                     if app_name in self.apps:
                         del self.apps[app_name]
-                
+
                 # Handle updated apps
                 for app in updated:
                     app_name = app.get("name")
@@ -323,7 +339,7 @@ class USBManager:
                             self.apps[app_name]["icon"] = icon_data
                         else:
                             self.apps[app_name].update(app)
-                
+
                 # Update UI manager's app data and redraw only if needed
                 if self.ui_manager:
                     self.ui_manager.apps = self.apps
@@ -339,31 +355,34 @@ class USBManager:
                                     app.get("volume", 0)
                                 )
                                 break
-            
+
             elif msg_type == "icon_data_b64":
                 import binascii
                 app_name = data.get("app")
                 b64_data = data.get("data")
-                
+
                 if app_name and b64_data and app_name in self.apps and not self.processing_icon:
                     self.processing_icon = True  # Set processing flag
                     try:
                         # Decode base64 data using binascii
                         icon_data = binascii.a2b_base64(b64_data)
-                        self.logger.info(f"Decoded icon data for {app_name}, size: {len(icon_data)} bytes")
-                        
+                        self.logger.info(
+                            f"Decoded icon data for {app_name}, size: {len(icon_data)} bytes")
+
                         # Verify size is correct (48x48x2 = 4608 bytes)
                         if len(icon_data) != 4608:
-                            raise ValueError(f"Invalid icon size: {len(icon_data)} bytes")
-                        
+                            raise ValueError(
+                                f"Invalid icon size: {len(icon_data)} bytes")
+
                         # Store the icon data
                         self.apps[app_name]["icon"] = icon_data
                         # Update UI manager's app data
                         if self.ui_manager:
                             self.ui_manager.apps[app_name]["icon"] = icon_data
                         self.received_icons += 1
-                        self.logger.info(f"Received {self.received_icons}/{self.expected_icons} icons")
-                        
+                        self.logger.info(
+                            f"Received {self.received_icons}/{self.expected_icons} icons")
+
                         # Send confirmation
                         confirm = {
                             "type": "icon_parsed",
@@ -372,7 +391,8 @@ class USBManager:
                         }
                         self.send_message(confirm)
                     except Exception as e:
-                        self.logger.error(f"Error decoding icon data: {str(e)}")
+                        self.logger.error(
+                            f"Error decoding icon data: {str(e)}")
                         # Send error confirmation
                         error = {
                             "type": "icon_parsed",
@@ -385,13 +405,16 @@ class USBManager:
                         self.processing_icon = False  # Clear processing flag
                 else:
                     if self.processing_icon:
-                        self.logger.info("Already processing an icon, skipping request")
+                        self.logger.info(
+                            "Already processing an icon, skipping request")
                     elif app_name not in self.apps:
-                        self.logger.warning(f"Received icon data for unknown app: {app_name}")
+                        self.logger.warning(
+                            f"Received icon data for unknown app: {app_name}")
                     elif self.apps[app_name].get("icon"):
-                        self.logger.warning(f"Icon already exists for app: {app_name}")
+                        self.logger.warning(
+                            f"Icon already exists for app: {app_name}")
                     else:
                         self.logger.warning("Invalid icon data request")
-            
+
         except Exception as e:
-            self.logger.error(f"Error handling message: {str(e)}") 
+            self.logger.error(f"Error handling message: {str(e)}")
