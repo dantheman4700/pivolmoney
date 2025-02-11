@@ -28,21 +28,27 @@ class VolumeMonitor:
         pico_ports = []
         
         for port in ports:
-            if "Board in FS mode" in port.description:
+            # Look for Pico's specific VID:PID in hardware ID
+            if "VID:PID=2E8A:0005" in port.hwid:
                 pico_ports.append(port.device)
-                print(f"Found Pico CDC on {port.device}")
         
         if pico_ports:
+            # Sort ports in reverse order to try the higher number first (COM11 before COM10)
+            pico_ports.sort(reverse=True)
+            
             # Try each found port
             for port in pico_ports:
+                print(f"Attempting connection on {port}")
                 self.com_port = port
                 if self.try_connect():
+                    print(f"Successfully connected on {port}")
                     return True
             
-        # If not found or none worked, try COM7 as fallback
-        self.com_port = "COM10"
-        print(f"Using fallback Pico CDC on {self.com_port}")
-        return self.try_connect()
+            print("Failed to connect to Pico")
+            return False
+        
+        print("No Pico device found")
+        return False
         
     def try_connect(self):
         """Try to connect to a specific COM port"""
@@ -59,36 +65,39 @@ class VolumeMonitor:
                 timeout=1
             )
             
-            print("Port opened, testing communication...")
+            # Clear any pending data
+            self.serial.reset_input_buffer()
+            self.serial.reset_output_buffer()
+            time.sleep(0.1)
             
-            # Give a moment for the connection to stabilize
-            time.sleep(0.5)
+            # Try to send test message with retry
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                if self.send_message({"type": "test"}):
+                    # Wait for response
+                    start_time = time.time()
+                    while time.time() - start_time < 5:  # 5 second timeout
+                        if self.serial.in_waiting:
+                            try:
+                                line = self.serial.readline().decode().strip()
+                                if line:
+                                    try:
+                                        data = json.loads(line)
+                                        if data.get("type") == "test_response" and data.get("status") == "ok":
+                                            self.connected = True
+                                            return True
+                                    except ValueError:  # Catches JSON decode errors
+                                        pass
+                            except Exception as e:
+                                pass
+                        time.sleep(0.1)
+                time.sleep(0.5)  # Wait before retry
             
-            # Try to send test message
-            if self.send_message({"type": "test"}):
-                print("Waiting for response...")
-                # Wait for response
-                start_time = time.time()
-                while time.time() - start_time < 5:  # 5 second timeout
-                    if self.serial.in_waiting:
-                        try:
-                            line = self.serial.readline().decode().strip()
-                            if line:
-                                print(f"Received: {line}")
-                                data = json.loads(line)
-                                if data.get("type") == "test_response" and data.get("status") == "ok":
-                                    print("Successfully connected")
-                                    return True
-                        except Exception as e:
-                            print(f"Error processing response: {e}")
-                    time.sleep(0.1)
-            
-            print("No response received")
             self.disconnect()
             return False
             
         except Exception as e:
-            print(f"Connection attempt failed: {e}")
+            print(f"Connection error: {e}")
             self.disconnect()
             return False
             
@@ -367,7 +376,7 @@ class VolumeMonitor:
                                     if line:
                                         data = json.loads(line)
                                         self.handle_message(data)
-                                except json.JSONDecodeError as e:
+                                except ValueError as e:
                                     print(f"Invalid JSON: {e}")
                                 except Exception as e:
                                     print(f"Error processing message: {e}")

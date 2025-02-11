@@ -147,22 +147,29 @@ class USBManager:
 
         try:
             # Check if data is available
-            # CDC read requires max_length parameter
             data = self.cdc.read(64)  # Read up to 64 bytes at a time
             if data:
-                # Add to input buffer
-                self.input_buffer.extend(data)
+                # Handle different data types
+                if isinstance(data, int):
+                    self.input_buffer.append(data)
+                elif isinstance(data, (bytes, bytearray)):
+                    self.input_buffer.extend(data)
+                else:
+                    self.logger.error(f"Unexpected data type: {type(data)}")
+                    return None
 
                 # Check for newline
                 try:
-                    nl_idx = self.input_buffer.index(b'\n'[0])
-                    # Extract line and remove from buffer
-                    line = bytes(self.input_buffer[:nl_idx]).decode().strip()
-                    self.input_buffer = self.input_buffer[nl_idx + 1:]
-                    return line
-                except ValueError:
-                    # No newline found
-                    pass
+                    # Look for newline in buffer
+                    for i in range(len(self.input_buffer)):
+                        if self.input_buffer[i] == 10:  # 10 is ASCII for newline
+                            # Extract line and remove from buffer
+                            line = bytes(self.input_buffer[:i]).decode('utf-8').strip()
+                            self.input_buffer = self.input_buffer[i + 1:]
+                            return line
+                except Exception as e:
+                    self.logger.error(f"Error processing buffer: {str(e)}")
+                    self.input_buffer = bytearray()  # Clear buffer on error
             return None
         except Exception as e:
             self.logger.error(f"Error reading line: {str(e)}")
