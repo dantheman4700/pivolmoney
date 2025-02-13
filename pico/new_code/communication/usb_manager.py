@@ -5,6 +5,8 @@ from core.logger import get_logger
 import usb.device
 from usb.device.cdc import CDCInterface
 from usb.device.hid import HIDInterface
+from core.config import UIState
+import binascii
 
 # For older MicroPython versions that don't have JSONDecodeError in json module
 try:
@@ -46,12 +48,16 @@ class MediaHIDInterface(HIDInterface):
     def send_control(self, control, duration_ms=100):
         """Send a media control command with automatic release"""
         try:
+            # Log the control being sent
+            print(f"Sending HID control: {control:02x}")
+            # Send the control
             self.send_report(bytes([control]))
             time.sleep_ms(duration_ms)
-            self.send_report(b"\x00")  # Release
+            # Send release
+            self.send_report(bytes([0]))
             return True
         except Exception as e:
-            print(f"Error sending control: {str(e)}")
+            print(f"Error sending HID control: {str(e)}")
             return False
 
 
@@ -60,12 +66,12 @@ class USBManager:
     _instance = None
 
     # Control bit masks for HID media controls
-    MUTE = 0b00000001  # Bit 0
-    VOL_UP = 0b00000010  # Bit 1
-    VOL_DOWN = 0b00000100  # Bit 2
-    PLAY_PAUSE = 0b00001000  # Bit 3
-    NEXT_TRACK = 0b00010000  # Bit 4
-    PREV_TRACK = 0b00100000  # Bit 5
+    MUTE = 0x01      # Bit 0
+    VOL_UP = 0x02    # Bit 1
+    VOL_DOWN = 0x04  # Bit 2
+    PLAY_PAUSE = 0x08  # Bit 3
+    NEXT_TRACK = 0x10  # Bit 4
+    PREV_TRACK = 0x20  # Bit 5
 
     def __new__(cls):
         if cls._instance is None:
@@ -175,36 +181,47 @@ class USBManager:
             self.logger.error(f"Error reading line: {str(e)}")
             return None
 
-    def send_message(self, data):
-        """Send message through CDC interface"""
+    def send_message(self, data, max_retries=3):
+        """Send message through CDC interface with retries"""
         if not self.initialized or not self.cdc:
             self.logger.error("Cannot send message - not initialized")
             return False
 
-        try:
-            message = json.dumps(data) + '\n'
-            # Write to CDC interface
-            n = self.cdc.write(message.encode())
-            if n > 0:
-                self.logger.debug(f"Sent message: {message.strip()}")
-                return True
-            else:
-                self.logger.warning("No bytes sent")
-                return False
+        for attempt in range(max_retries):
+            try:
+                message = json.dumps(data) + '\n'
+                # Write to CDC interface
+                n = self.cdc.write(message.encode())
+                if n > 0:
+                    self.logger.debug(f"Sent message: {message.strip()}")
+                    return True
+                else:
+                    self.logger.warning(f"No bytes sent (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep_ms(100)  # Small delay before retry
+                        continue
+                    return False
 
-        except Exception as e:
-            self.logger.error(f"Failed to send message: {str(e)}")
-            return False
+            except Exception as e:
+                self.logger.error(f"Failed to send message (attempt {attempt + 1}): {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep_ms(100)  # Small delay before retry
+                    continue
+                return False
+        return False
 
     def send_media_control(self, control, duration_ms=100):
         """Send a media control command with automatic release"""
         if not self.initialized or not self.hid:
+            self.logger.error("Cannot send media control - not initialized")
             return False
 
         try:
+            # Log the control being sent
+            self.logger.debug(f"Sending HID control: {control:02x}")  # Changed to debug level
             return self.hid.send_control(control, duration_ms)
         except Exception as e:
-            self.logger.error(f"Error sending media control: {str(e)}")
+            self.logger.error(f"Error sending HID control: {str(e)}")
             return False
 
     def is_ready(self):
@@ -225,6 +242,7 @@ class USBManager:
         try:
             msg_type = data.get("type", "")
             self.logger.info(f"Processing message type: {msg_type}")
+            self.logger.debug(f"Message data: {data}")  # Log full message data
 
             if msg_type == "test":
                 self.logger.info("Received test message, sending response")
@@ -277,151 +295,155 @@ class USBManager:
                         self.logger.error("Failed to send config confirmation")
 
                 except Exception as e:
-                    self.logger.error(
-                        f"Error processing initial config: {str(e)}")
+                    self.logger.error(f"Error processing initial config: {str(e)}")
 
-            elif msg_type == "volume_update":
+            elif msg_type == "icon_data":
                 app_name = data.get("app")
-                volume = data.get("volume")
-                if app_name and volume is not None:
-                    if app_name in self.apps:
-                        # Preserve icon if it exists
-                        if "icon" in self.apps[app_name]:
-                            icon_data = self.apps[app_name]["icon"]
-                            self.apps[app_name]["volume"] = volume
-                            self.apps[app_name]["icon"] = icon_data
-                        else:
-                            self.apps[app_name]["volume"] = volume
-                        # Update UI if we have a UI manager
-                        if self.ui_manager:
-                            self.ui_manager.handle_volume_update(
-                                app_name, volume)
-                    else:
-                        self.logger.warning(
-                            f"Volume update for unknown app: {app_name}")
-
-            elif msg_type == "mute_update":
-                app_name = data.get("app")
-                muted = data.get("muted")
-                if app_name and muted is not None:
-                    if app_name in self.apps:
-                        # Preserve icon if it exists
-                        if "icon" in self.apps[app_name]:
-                            icon_data = self.apps[app_name]["icon"]
-                            self.apps[app_name]["muted"] = muted
-                            self.apps[app_name]["icon"] = icon_data
-                        else:
-                            self.apps[app_name]["muted"] = muted
-                        # Update UI if we have a UI manager
-                        if self.ui_manager:
-                            self.ui_manager.handle_mute_update(app_name, muted)
-                    else:
-                        self.logger.warning(
-                            f"Mute update for unknown app: {app_name}")
-
-            elif msg_type == "app_changes":
-                added = data.get("added", [])
-                removed = data.get("removed", [])
-                updated = data.get("updated", [])
-
-                # Handle added apps
-                for app in added:
-                    app_name = app.get("name")
-                    if app_name:
-                        self.apps[app_name] = app
-
-                # Handle removed apps
-                for app_name in removed:
-                    if app_name in self.apps:
-                        del self.apps[app_name]
-
-                # Handle updated apps
-                for app in updated:
-                    app_name = app.get("name")
-                    if app_name in self.apps:
-                        # Preserve icon if it exists
-                        if "icon" in self.apps[app_name]:
-                            icon_data = self.apps[app_name]["icon"]
-                            self.apps[app_name].update(app)
-                            self.apps[app_name]["icon"] = icon_data
-                        else:
-                            self.apps[app_name].update(app)
-
-                # Update UI manager's app data and redraw only if needed
-                if self.ui_manager:
-                    self.ui_manager.apps = self.apps
-                    if added or removed:
-                        # Only redraw app list if apps were added/removed
-                        self.ui_manager.draw_app_list()
-                    elif updated:
-                        # For updates, only redraw center panel if selected app was updated
-                        for app in updated:
-                            if app.get("name") == self.ui_manager.selected_app:
-                                self.ui_manager.draw_center_panel(
-                                    app.get("name"),
-                                    app.get("volume", 0)
-                                )
-                                break
-
-            elif msg_type == "icon_data_b64":
-                import binascii
-                app_name = data.get("app")
-                b64_data = data.get("data")
-
-                if app_name and b64_data and app_name in self.apps and not self.processing_icon:
-                    self.processing_icon = True  # Set processing flag
+                self.logger.debug(f"Current processing_icon flag: {self.processing_icon}")
+                self.logger.debug(f"Apps in registry: {list(self.apps.keys())}")
+                
+                if app_name and app_name in self.apps and not self.processing_icon:
+                    self.processing_icon = True
                     try:
-                        # Decode base64 data using binascii
-                        icon_data = binascii.a2b_base64(b64_data)
-                        self.logger.info(
-                            f"Decoded icon data for {app_name}, size: {len(icon_data)} bytes")
-
-                        # Verify size is correct (48x48x2 = 4608 bytes)
-                        if len(icon_data) != 4608:
-                            raise ValueError(
-                                f"Invalid icon size: {len(icon_data)} bytes")
-
-                        # Store the icon data
-                        self.apps[app_name]["icon"] = icon_data
-                        # Update UI manager's app data
-                        if self.ui_manager:
-                            self.ui_manager.apps[app_name]["icon"] = icon_data
-                        self.received_icons += 1
-                        self.logger.info(
-                            f"Received {self.received_icons}/{self.expected_icons} icons")
-
-                        # Send confirmation
-                        confirm = {
-                            "type": "icon_parsed",
-                            "app": app_name,
-                            "status": "ok"
+                        # Send ready for icon data
+                        ready_msg = {
+                            "type": "ready_for_icon",
+                            "app": app_name
                         }
-                        self.send_message(confirm)
+                        if self.send_message(ready_msg):
+                            self.logger.info(f"Ready to receive icon for {app_name}")
+                        else:
+                            self.logger.error(f"Failed to send ready message for {app_name}")
+                            self.processing_icon = False
                     except Exception as e:
-                        self.logger.error(
-                            f"Error decoding icon data: {str(e)}")
-                        # Send error confirmation
-                        error = {
-                            "type": "icon_parsed",
-                            "app": app_name,
-                            "status": "error",
-                            "error": str(e)
-                        }
-                        self.send_message(error)
-                    finally:
-                        self.processing_icon = False  # Clear processing flag
+                        self.logger.error(f"Error preparing for icon: {str(e)}")
+                        self.processing_icon = False
                 else:
                     if self.processing_icon:
-                        self.logger.info(
-                            "Already processing an icon, skipping request")
+                        self.logger.info(f"Already processing an icon (for previous app), skipping request for {app_name}")
                     elif app_name not in self.apps:
-                        self.logger.warning(
-                            f"Received icon data for unknown app: {app_name}")
-                    elif self.apps[app_name].get("icon"):
-                        self.logger.warning(
-                            f"Icon already exists for app: {app_name}")
+                        self.logger.warning(f"Icon data request for unknown app: {app_name}")
                     else:
-                        self.logger.warning("Invalid icon data request")
+                        self.logger.warning(f"Invalid icon data request state for {app_name}")
+
+            elif msg_type == "icon_data_b64":
+                app_name = data.get("app")
+                b64_data = data.get("data")
+                self.logger.debug(f"Processing b64 data for {app_name}, processing_icon flag: {self.processing_icon}")
+
+                if app_name and b64_data and app_name in self.apps:
+                    try:
+                        if self.handle_icon_data_b64(app_name, b64_data):
+                            self.logger.info(f"Successfully processed icon for {app_name}")
+                        else:
+                            self.logger.error(f"Failed to process icon for {app_name}")
+                    finally:
+                        self.logger.debug(f"Clearing processing_icon flag for {app_name}")
+                        self.processing_icon = False  # Clear processing flag
+                else:
+                    if not app_name:
+                        self.logger.warning("Missing app name in icon data request")
+                    elif not b64_data:
+                        self.logger.warning(f"Missing base64 data for {app_name}")
+                    elif app_name not in self.apps:
+                        self.logger.warning(f"Icon data received for unknown app: {app_name}")
+                    else:
+                        self.logger.warning(f"Invalid icon data received for {app_name}")
+
+            elif msg_type == "init_complete":
+                self.logger.info("Initialization complete")
+                # Send ready message to start normal operation
+                self.send_message({"type": "ready"})
+                # Transition to full UI if we have all expected icons
+                if self.received_icons == self.expected_icons and self.ui_manager:
+                    self.ui_manager.set_state(UIState.FULL_UI)
 
         except Exception as e:
             self.logger.error(f"Error handling message: {str(e)}")
+            if self.processing_icon:
+                self.processing_icon = False
+
+    def handle_icon_data_b64(self, app_name, b64_data):
+        """Handle base64 encoded icon data"""
+        try:
+            # Log raw data length for debugging
+            self.logger.info(f"Received base64 data for {app_name}, length: {len(b64_data)}")
+            
+            # Decode base64 data using binascii
+            try:
+                icon_data = binascii.a2b_base64(b64_data)
+                self.logger.info(f"Decoded icon data for {app_name}, size: {len(icon_data)} bytes")
+                
+                # Print first few bytes for debugging
+                debug_bytes = " ".join(f"{b:02x}" for b in icon_data[:16])
+                self.logger.debug(f"First 16 bytes: {debug_bytes}")
+                
+            except Exception as e:
+                raise ValueError(f"Failed to decode base64 data: {str(e)}")
+
+            # Verify size is correct (48x48x2 = 4608 bytes)
+            if len(icon_data) != 4608:
+                raise ValueError(f"Invalid icon size: {len(icon_data)} bytes, expected 4608 bytes")
+
+            # Store the icon data
+            try:
+                # Log the icon data details
+                self.logger.info(f"Storing icon data for {app_name}")
+                self.logger.debug(f"Icon data type: {type(icon_data)}")
+                
+                # Convert to bytes and store
+                icon_bytes = bytes(icon_data)
+                self.logger.debug(f"Converted to bytes, length: {len(icon_bytes)}")
+                
+                # Store in apps dictionary
+                if app_name not in self.apps:
+                    self.apps[app_name] = {}
+                self.apps[app_name]["icon"] = icon_bytes
+                self.logger.debug(f"Stored icon in apps dictionary for {app_name}")
+                
+                # Update UI manager's app data if available
+                if self.ui_manager:
+                    if app_name not in self.ui_manager.apps:
+                        self.ui_manager.apps[app_name] = {}
+                    self.ui_manager.apps[app_name]["icon"] = icon_bytes
+                    self.logger.debug(f"Updated UI manager's icon data for {app_name}")
+                    
+                self.received_icons += 1
+                self.logger.info(f"Successfully stored icon data. Received {self.received_icons}/{self.expected_icons} icons")
+
+                # Send confirmation with retries
+                confirm = {
+                    "type": "icon_parsed",
+                    "app": app_name,
+                    "status": "ok"
+                }
+                if not self.send_message(confirm, max_retries=3):
+                    raise ValueError(f"Failed to send confirmation for {app_name}")
+                
+                return True
+                
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Failed to store icon data for {app_name}: {str(e)}")
+            except Exception as e:
+                raise ValueError(f"Unexpected error storing icon data for {app_name}: {str(e)}")
+                
+        except ValueError as e:
+            self.logger.error(f"Icon data validation error for {app_name}: {str(e)}")
+            error = {
+                "type": "icon_parsed",
+                "app": app_name,
+                "status": "error",
+                "error": str(e)
+            }
+            self.send_message(error, max_retries=3)
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error processing icon data for {app_name}: {str(e)}")
+            error = {
+                "type": "icon_parsed",
+                "app": app_name,
+                "status": "error",
+                "error": f"Internal error: {str(e)}"
+            }
+            self.send_message(error, max_retries=3)
+            return False

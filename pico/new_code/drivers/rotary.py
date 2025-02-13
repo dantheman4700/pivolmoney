@@ -8,7 +8,7 @@ from core.config import (
 
 class RotaryEncoder:
     def __init__(self, clk_pin=None, dt_pin=None, sw_pin=None, min_val=ENCODER_MIN_VAL, 
-                 max_val=ENCODER_MAX_VAL, step=ENCODER_STEP, value=0, debug=False):
+                 max_val=ENCODER_MAX_VAL, step=ENCODER_STEP, value=0, debug=False, callback=None):
         """Initialize Rotary Encoder with specified pins and range"""
         self.logger = get_logger()
         
@@ -30,6 +30,7 @@ class RotaryEncoder:
         self.step = step
         self._value = max(min_val, min(max_val, value))
         self.debug = debug
+        self.callback = callback  # Store callback function
         
         self.last_clk = self.clk.value()
         self.last_dt = self.dt.value()
@@ -43,6 +44,7 @@ class RotaryEncoder:
         """Read encoder state and return (value_changed, button_pressed)"""
         value_changed = False
         button_pressed = False
+        direction = 0  # 0 = no change, 1 = CW, -1 = CCW
         
         try:
             # Read current pin states
@@ -57,6 +59,7 @@ class RotaryEncoder:
                     if new_value <= self.max_val:
                         self._value = new_value
                         value_changed = True
+                        direction = 1
                         if self.debug:
                             self.logger.debug(f"Rotary CW: {self._value}")
                 else:  # Counter-clockwise
@@ -64,8 +67,16 @@ class RotaryEncoder:
                     if new_value >= self.min_val:
                         self._value = new_value
                         value_changed = True
+                        direction = -1
                         if self.debug:
                             self.logger.debug(f"Rotary CCW: {self._value}")
+                            
+                # Call callback if value changed and callback exists
+                if value_changed and self.callback:
+                    try:
+                        self.callback(self._value, direction)
+                    except Exception as e:
+                        self.logger.error(f"Error in rotary callback: {str(e)}")
             
             # Check for button press with debounce
             current_time = time.ticks_ms()
@@ -74,6 +85,12 @@ class RotaryEncoder:
                     button_pressed = True
                     if self.debug:
                         self.logger.debug("Button pressed")
+                    # Call callback for button press if it exists
+                    if self.callback:
+                        try:
+                            self.callback(self._value, 0)  # 0 indicates button press
+                        except Exception as e:
+                            self.logger.error(f"Error in button callback: {str(e)}")
                 self.last_button_time = current_time
             
             # Update last states

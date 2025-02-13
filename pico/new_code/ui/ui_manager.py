@@ -46,6 +46,7 @@ class UIManager:
         self.encoder_callback = None
         self.last_volume_update = time.ticks_ms()
         self.volume_update_delay = 50  # 50ms between volume updates
+        self.usb_manager = None  # Reference to USB manager
         
     def initialize_hardware(self):
         """Initialize display and touch hardware"""
@@ -93,14 +94,15 @@ class UIManager:
             
             self.touch = FT6236(i2c, PIN_TOUCH_SDA, PIN_TOUCH_SCL)
             
-            # Initialize rotary encoder
+            # Initialize rotary encoder with callback
             self.encoder = RotaryEncoder(
                 PIN_ROT_CLK,
                 PIN_ROT_DT,
                 PIN_ROT_SW,
                 min_val=0,
                 max_val=100,
-                step=1
+                step=1,
+                callback=self.handle_encoder_change
             )
             
             # Clear screen and draw initial UI
@@ -793,3 +795,13 @@ class UIManager:
         text_width = len(text) * 6
         text_x = x + (ICON_SIZE - text_width) // 2
         self.display.draw_text(text_x, y + ICON_SIZE + 5, text, text_color, None)
+
+    def handle_encoder_change(self, value, direction):
+        """Handle rotary encoder changes"""
+        if self.encoder_callback:
+            if direction > 0:
+                self.encoder_callback('vol_up')
+            elif direction < 0:
+                self.encoder_callback('vol_down')
+            # Update UI if needed
+            self.draw_ui()

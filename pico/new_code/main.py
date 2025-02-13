@@ -66,25 +66,21 @@ def wait_for_button():
 
 def handle_media_control(action):
     """Handle media control actions"""
-    logger.info(f"Media control action: {action}")
     if usb_manager and usb_manager.is_ready():
         try:
             if action == 'play':
-                success = usb_manager.send_media_control(USBManager.PLAY_PAUSE)
-                logger.info(
-                    f"PLAY_PAUSE command {'sent' if success else 'failed'}")
+                return usb_manager.send_media_control(USBManager.PLAY_PAUSE)
             elif action == 'prev':
-                success = usb_manager.send_media_control(USBManager.PREV_TRACK)
-                logger.info(
-                    f"PREV_TRACK command {'sent' if success else 'failed'}")
+                return usb_manager.send_media_control(USBManager.PREV_TRACK)
             elif action == 'next':
-                success = usb_manager.send_media_control(USBManager.NEXT_TRACK)
-                logger.info(
-                    f"NEXT_TRACK command {'sent' if success else 'failed'}")
+                return usb_manager.send_media_control(USBManager.NEXT_TRACK)
             elif action == 'mute':
-                success = usb_manager.send_media_control(USBManager.MUTE)
-                logger.info(f"MUTE command {'sent' if success else 'failed'}")
-            return success
+                return usb_manager.send_media_control(USBManager.MUTE)
+            elif action == 'vol_up':
+                return usb_manager.send_media_control(USBManager.VOL_UP)
+            elif action == 'vol_down':
+                return usb_manager.send_media_control(USBManager.VOL_DOWN)
+            return False
         except Exception as e:
             logger.error(f"Error in media control: {str(e)}")
     return False
@@ -117,6 +113,10 @@ def main():
         ui_manager = UIManager()  # Create instance
         ui_manager = UIManager.get_instance()  # Get singleton instance
 
+        # Connect managers to each other
+        usb_manager.ui_manager = ui_manager
+        ui_manager.usb_manager = usb_manager
+
         # Initialize USB device first
         if not usb_manager.initialize():
             logger.error("Failed to initialize USB device")
@@ -129,11 +129,10 @@ def main():
             handle_interrupt(cleanup=True)
             return
 
-        # Set UI state to simple media controls
+        # Set UI state to simple media controls and set up callbacks
         ui_manager.set_state(UIState.SIMPLE_MEDIA)
-
-        # Set up UI manager's touch callback
         ui_manager.touch_callback = handle_touch
+        ui_manager.encoder_callback = handle_media_control  # Add encoder callback
 
         # Main loop
         while True:
@@ -145,6 +144,10 @@ def main():
                     usb_manager.handle_message(data)
                 except Exception as e:
                     logger.error(f"Error processing message: {str(e)}")
+
+            # Process UI events (touch and encoder)
+            if ui_manager:
+                ui_manager.update()
 
             # Let the system breathe
             time.sleep_ms(10)
