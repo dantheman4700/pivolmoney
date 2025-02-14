@@ -7,6 +7,7 @@ from usb.device.cdc import CDCInterface
 from usb.device.hid import HIDInterface
 from core.config import UIState
 import binascii
+import gc
 
 # For older MicroPython versions that don't have JSONDecodeError in json module
 try:
@@ -14,6 +15,21 @@ try:
 except ImportError:
     JSONDecodeError = ValueError  # Use ValueError as fallback
 
+# Message Types
+MSG_HEARTBEAT = "hb"     # Heartbeat
+MSG_CONNECT = "conn"     # Connection/handshake
+MSG_ICON_REQ = "ireq"    # Icon request
+MSG_ICON_TRANSFER = "itr" # Icon transfer
+MSG_UPDATE = "upd"       # State update
+MSG_ERROR = "err"        # Error message
+MSG_ACK = "ack"         # Acknowledgment
+MSG_INITIAL_CONFIG = "init"  # Initial configuration
+MSG_VOLUME_CMD = "vcmd"  # Volume command acknowledgment
+
+# Expected icon size in bytes (RGB565 format)
+ICON_SIZE = 4608  # 48x48x2 bytes
+ICON_CACHE_SIZE = 8  # Maximum number of icons to cache
+HEARTBEAT_TIMEOUT_MS = 5000  # 5 second timeout for heartbeat
 
 class MediaHIDInterface(HIDInterface):
     """HID interface for media controls"""
@@ -84,11 +100,13 @@ class USBManager:
             cls._instance.input_buffer = bytearray()
             cls._instance._last_hid_state = 0
             cls._instance.apps = {}  # Dictionary to store app information
-            cls._instance.expected_icons = 0  # Track how many icons we expect
-            cls._instance.received_icons = 0  # Track how many icons we've received
-            # Flag to prevent duplicate icon processing
-            cls._instance.processing_icon = False
-            cls._instance.ui_manager = None  # Reference to UI manager
+            cls._instance.icon_cache = {}  # Separate cache for icons
+            cls._instance.icon_cache_order = []  # Track order for LRU cache
+            cls._instance.last_heartbeat = 0
+            cls._instance.connected = False
+            cls._instance.ui_manager = None
+            cls._instance.pending_icons = set()  # Track icons that need to be loaded
+            cls._instance.initial_config_received = False  # Track if initial config was received
         return cls._instance
 
     @classmethod
@@ -108,8 +126,8 @@ class USBManager:
             self.cdc = CDCInterface()
             self.hid = MediaHIDInterface()
 
-            # Initialize CDC with non-blocking timeout
-            self.cdc.init(timeout=0)
+            # Initialize CDC with increased timeout for improved read stability
+            self.cdc.init(timeout=100)
 
             # Get USB device singleton and set descriptors for composite device
             device = usb.device.get()
@@ -118,7 +136,7 @@ class USBManager:
             device.device_protocol = 0x01   # USB IAD Protocol
             device.max_packet_len = 0x40    # 64 bytes
             device.vid = 0x2E8A  # Raspberry Pi VID
-            device.pid = 0x0005  # Your PID
+            device.pid = 0x0005  # Specific PID
             device.manufacturer = "MicroPython"
             device.product = "Board in FS mode"
 
@@ -181,34 +199,168 @@ class USBManager:
             self.logger.error(f"Error reading line: {str(e)}")
             return None
 
-    def send_message(self, data, max_retries=3):
-        """Send message through CDC interface with retries"""
-        if not self.initialized or not self.cdc:
-            self.logger.error("Cannot send message - not initialized")
+    def send_message(self, msg_type, payload=None):
+        """Send a message using the lean protocol format"""
+        if not self.cdc:
+            return False
+            
+        try:
+            message = {
+                "t": msg_type,
+                "p": payload if payload is not None else {}
+            }
+            json_str = json.dumps(message)
+            if not json_str.endswith('\n'):
+                json_str += '\n'
+            self.cdc.write(json_str.encode())
+            return True
+        except Exception as e:
+            self.logger.error(f"Send error: {str(e)}")
             return False
 
-        for attempt in range(max_retries):
-            try:
-                message = json.dumps(data) + '\n'
-                # Write to CDC interface
-                n = self.cdc.write(message.encode())
-                if n > 0:
-                    self.logger.debug(f"Sent message: {message.strip()}")
-                    return True
-                else:
-                    self.logger.warning(f"No bytes sent (attempt {attempt + 1}/{max_retries})")
-                    if attempt < max_retries - 1:
-                        time.sleep_ms(100)  # Small delay before retry
-                        continue
-                    return False
+    def read_message(self):
+        """Read and parse a message in the lean protocol format"""
+        if not self.cdc:
+            return None, None
 
-            except Exception as e:
-                self.logger.error(f"Failed to send message (attempt {attempt + 1}): {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep_ms(100)  # Small delay before retry
-                    continue
-                return False
-        return False
+        try:
+            line = self.read_line()
+            if line:
+                message = json.loads(line)
+                return message.get("t"), message.get("p", {})
+            return None, None
+        except Exception as e:
+            self.logger.error(f"Read error: {str(e)}")
+            return None, None
+
+    def _update_icon_cache(self, app_name, icon_data):
+        """Update icon cache using LRU policy"""
+        try:
+            # Remove from cache order if already exists
+            if app_name in self.icon_cache_order:
+                self.icon_cache_order.remove(app_name)
+            
+            # Add to front of cache order
+            self.icon_cache_order.insert(0, app_name)
+            
+            # If cache is full, remove least recently used icon
+            if len(self.icon_cache_order) > ICON_CACHE_SIZE:
+                lru_app = self.icon_cache_order.pop()
+                if lru_app in self.icon_cache:
+                    del self.icon_cache[lru_app]
+                    self.logger.info(f"Removed {lru_app} icon from cache (LRU)")
+            
+            # Store icon in cache
+            self.icon_cache[app_name] = icon_data
+            self.logger.info(f"Added {app_name} icon to cache")
+            
+            # Remove from pending icons if it was pending
+            if app_name in self.pending_icons:
+                self.pending_icons.remove(app_name)
+                self._check_ui_state()
+            
+            # Run garbage collection after cache update
+            gc.collect()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating icon cache: {str(e)}")
+
+    def handle_message(self, msg_type, payload):
+        """Handle incoming messages based on type"""
+        try:
+            if msg_type == MSG_HEARTBEAT:
+                self.last_heartbeat = time.ticks_ms()
+                self.connected = True
+                # Send heartbeat back for bi-directional monitoring
+                self.send_message(MSG_HEARTBEAT)
+                
+            elif msg_type == MSG_CONNECT:
+                self.connected = True
+                self.send_message(MSG_ACK)
+                # Request initial configuration
+                self.send_message(MSG_INITIAL_CONFIG)
+                
+            elif msg_type == MSG_INITIAL_CONFIG:
+                # Clear existing state for fresh config
+                self.apps.clear()
+                self.icon_cache.clear()
+                self.icon_cache_order.clear()
+                gc.collect()  # Clean up memory
+                
+                if "apps" in payload:
+                    self._handle_apps_update(payload["apps"], is_initial=True)
+                self.send_message(MSG_ACK)
+                
+            elif msg_type == MSG_ICON_TRANSFER:
+                if not payload or "n" not in payload or "d" not in payload:
+                    self.send_message(MSG_ERROR, {"m": "Invalid icon data"})
+                    return
+                    
+                try:
+                    app_name = payload["n"]
+                    # Use binascii instead of base64
+                    icon_data = binascii.a2b_base64(payload["d"])
+                    
+                    # Validate icon size
+                    if len(icon_data) != ICON_SIZE:
+                        self.send_message(MSG_ERROR, {
+                            "m": f"Invalid icon size: {len(icon_data)}"
+                        })
+                        return
+                    
+                    # Update icon cache
+                    self._update_icon_cache(app_name, icon_data)
+                    
+                    # Update app data and UI
+                    if app_name in self.apps:
+                        self.apps[app_name]["icon"] = icon_data
+                        if self.ui_manager:
+                            self.ui_manager.update_app_icon(app_name, icon_data)
+                    
+                    self.send_message(MSG_ACK)
+                    
+                except Exception as e:
+                    self.send_message(MSG_ERROR, {"m": f"Icon decode error: {str(e)}"})
+                    
+            elif msg_type == MSG_UPDATE:
+                if "apps" in payload:
+                    self._handle_apps_update(payload["apps"], is_initial=False)
+                if "vol" in payload:
+                    self._handle_volume_update(payload["vol"])
+                self.send_message(MSG_ACK)
+                
+            elif msg_type == MSG_VOLUME_CMD:
+                # Handle volume command acknowledgment
+                if self.ui_manager and "app" in payload and "v" in payload:
+                    self.ui_manager.handle_volume_update(payload["app"], payload["v"])
+                
+        except Exception as e:
+            self.logger.error(f"Message handling error: {str(e)}")
+            self.send_message(MSG_ERROR, {"m": str(e)})
+
+    def request_icon(self, app_name):
+        """Request an icon from the PC"""
+        return self.send_message(MSG_ICON_REQ, {"n": app_name})
+
+    def check_connection(self):
+        """Check if connection is still alive based on heartbeat"""
+        if not self.connected:
+            return False
+        
+        current_time = time.ticks_ms()
+        if time.ticks_diff(current_time, self.last_heartbeat) > HEARTBEAT_TIMEOUT_MS:
+            self.connected = False
+            self.apps.clear()  # Clear cached state
+            self.icon_cache.clear()  # Clear icon cache
+            self.icon_cache_order.clear()  # Clear cache order
+            self.pending_icons.clear()  # Clear pending icons
+            self.initial_config_received = False  # Reset initial config flag
+            if self.ui_manager:
+                self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
+                self.ui_manager.clear_apps()
+            gc.collect()  # Clean up memory
+            return False
+        return True
 
     def send_media_control(self, control, duration_ms=100):
         """Send a media control command with automatic release"""
@@ -229,221 +381,100 @@ class USBManager:
         return self.initialized and self.cdc and self.hid and self.cdc.is_open() and self.hid.is_open()
 
     def cleanup(self):
-        """Clean up resources"""
+        """Clean up resources and clear caches"""
         try:
             self.initialized = False
+            self.apps.clear()
+            self.icon_cache.clear()
+            self.icon_cache_order.clear()
             self.cdc = None
             self.hid = None
+            gc.collect()  # Force garbage collection
         except Exception as e:
             self.logger.error(f"Error during cleanup: {str(e)}")
 
-    def handle_message(self, data):
-        """Handle incoming messages"""
+    def _handle_apps_update(self, new_apps, is_initial=False):
+        """Handle incoming apps update with icon cache management"""
         try:
-            msg_type = data.get("type", "")
-            self.logger.info(f"Processing message type: {msg_type}")
-            self.logger.debug(f"Message data: {data}")  # Log full message data
-
-            if msg_type == "test":
-                self.logger.info("Received test message, sending response")
-                response = {
-                    "type": "test_response",
-                    "status": "ok"
-                }
-                if self.send_message(response):
-                    self.logger.info("Test response sent successfully")
-                    # After successful handshake, request initial config
-                    time.sleep_ms(100)  # Small delay before requesting config
-                    config_request = {
-                        "type": "request_initial_config"
-                    }
-                    if self.send_message(config_request):
-                        self.logger.info("Initial config requested")
-                    else:
-                        self.logger.error("Failed to request initial config")
-                else:
-                    self.logger.error("Failed to send test response")
-
-            elif msg_type == "initial_config":
-                self.logger.info("Received initial config")
-                try:
-                    # Store basic app info and count expected icons
-                    new_apps = {}
-                    self.expected_icons = 0
-                    seen_apps = set()  # Track unique apps
-
-                    for app in data.get("data", []):
-                        app_name = app.get("name")
-                        if app_name and app_name not in seen_apps:  # Only process unique apps
-                            seen_apps.add(app_name)
-                            new_apps[app_name] = app
-                            if app.get("has_icon", False):
-                                self.expected_icons += 1
-
-                    self.apps = new_apps
-                    self.received_icons = 0  # Reset received icons counter
-                    self.logger.info(
-                        f"Processed {len(self.apps)} unique apps from initial config, expecting {self.expected_icons} icons")
-
-                    # Send confirmation
-                    confirm = {
-                        "type": "config_received",
-                        "status": "ok",
-                        "unique_apps": len(self.apps)
-                    }
-                    if not self.send_message(confirm):
-                        self.logger.error("Failed to send config confirmation")
-
-                except Exception as e:
-                    self.logger.error(f"Error processing initial config: {str(e)}")
-
-            elif msg_type == "icon_data":
-                app_name = data.get("app")
-                self.logger.debug(f"Current processing_icon flag: {self.processing_icon}")
-                self.logger.debug(f"Apps in registry: {list(self.apps.keys())}")
-                
-                if app_name and app_name in self.apps and not self.processing_icon:
-                    self.processing_icon = True
-                    try:
-                        # Send ready for icon data
-                        ready_msg = {
-                            "type": "ready_for_icon",
-                            "app": app_name
-                        }
-                        if self.send_message(ready_msg):
-                            self.logger.info(f"Ready to receive icon for {app_name}")
-                        else:
-                            self.logger.error(f"Failed to send ready message for {app_name}")
-                            self.processing_icon = False
-                    except Exception as e:
-                        self.logger.error(f"Error preparing for icon: {str(e)}")
-                        self.processing_icon = False
-                else:
-                    if self.processing_icon:
-                        self.logger.info(f"Already processing an icon (for previous app), skipping request for {app_name}")
-                    elif app_name not in self.apps:
-                        self.logger.warning(f"Icon data request for unknown app: {app_name}")
-                    else:
-                        self.logger.warning(f"Invalid icon data request state for {app_name}")
-
-            elif msg_type == "icon_data_b64":
-                app_name = data.get("app")
-                b64_data = data.get("data")
-                self.logger.debug(f"Processing b64 data for {app_name}, processing_icon flag: {self.processing_icon}")
-
-                if app_name and b64_data and app_name in self.apps:
-                    try:
-                        if self.handle_icon_data_b64(app_name, b64_data):
-                            self.logger.info(f"Successfully processed icon for {app_name}")
-                        else:
-                            self.logger.error(f"Failed to process icon for {app_name}")
-                    finally:
-                        self.logger.debug(f"Clearing processing_icon flag for {app_name}")
-                        self.processing_icon = False  # Clear processing flag
-                else:
-                    if not app_name:
-                        self.logger.warning("Missing app name in icon data request")
-                    elif not b64_data:
-                        self.logger.warning(f"Missing base64 data for {app_name}")
-                    elif app_name not in self.apps:
-                        self.logger.warning(f"Icon data received for unknown app: {app_name}")
-                    else:
-                        self.logger.warning(f"Invalid icon data received for {app_name}")
-
-            elif msg_type == "init_complete":
-                self.logger.info("Initialization complete")
-                # Send ready message to start normal operation
-                self.send_message({"type": "ready"})
-                # Transition to full UI if we have all expected icons
-                if self.received_icons == self.expected_icons and self.ui_manager:
-                    self.ui_manager.set_state(UIState.FULL_UI)
-
-        except Exception as e:
-            self.logger.error(f"Error handling message: {str(e)}")
-            if self.processing_icon:
-                self.processing_icon = False
-
-    def handle_icon_data_b64(self, app_name, b64_data):
-        """Handle base64 encoded icon data"""
-        try:
-            # Log raw data length for debugging
-            self.logger.info(f"Received base64 data for {app_name}, length: {len(b64_data)}")
+            self.logger.info("Received apps update")
             
-            # Decode base64 data using binascii
-            try:
-                icon_data = binascii.a2b_base64(b64_data)
-                self.logger.info(f"Decoded icon data for {app_name}, size: {len(icon_data)} bytes")
-                
-                # Print first few bytes for debugging
-                debug_bytes = " ".join(f"{b:02x}" for b in icon_data[:16])
-                self.logger.debug(f"First 16 bytes: {debug_bytes}")
-                
-            except Exception as e:
-                raise ValueError(f"Failed to decode base64 data: {str(e)}")
-
-            # Verify size is correct (48x48x2 = 4608 bytes)
-            if len(icon_data) != 4608:
-                raise ValueError(f"Invalid icon size: {len(icon_data)} bytes, expected 4608 bytes")
-
-            # Store the icon data
-            try:
-                # Log the icon data details
-                self.logger.info(f"Storing icon data for {app_name}")
-                self.logger.debug(f"Icon data type: {type(icon_data)}")
-                
-                # Convert to bytes and store
-                icon_bytes = bytes(icon_data)
-                self.logger.debug(f"Converted to bytes, length: {len(icon_bytes)}")
-                
-                # Store in apps dictionary
-                if app_name not in self.apps:
-                    self.apps[app_name] = {}
-                self.apps[app_name]["icon"] = icon_bytes
-                self.logger.debug(f"Stored icon in apps dictionary for {app_name}")
-                
-                # Update UI manager's app data if available
-                if self.ui_manager:
-                    if app_name not in self.ui_manager.apps:
-                        self.ui_manager.apps[app_name] = {}
-                    self.ui_manager.apps[app_name]["icon"] = icon_bytes
-                    self.logger.debug(f"Updated UI manager's icon data for {app_name}")
-                    
-                self.received_icons += 1
-                self.logger.info(f"Successfully stored icon data. Received {self.received_icons}/{self.expected_icons} icons")
-
-                # Send confirmation with retries
-                confirm = {
-                    "type": "icon_parsed",
-                    "app": app_name,
-                    "status": "ok"
-                }
-                if not self.send_message(confirm, max_retries=3):
-                    raise ValueError(f"Failed to send confirmation for {app_name}")
-                
-                return True
-                
-            except (TypeError, ValueError) as e:
-                raise ValueError(f"Failed to store icon data for {app_name}: {str(e)}")
-            except Exception as e:
-                raise ValueError(f"Unexpected error storing icon data for {app_name}: {str(e)}")
-                
-        except ValueError as e:
-            self.logger.error(f"Icon data validation error for {app_name}: {str(e)}")
-            error = {
-                "type": "icon_parsed",
-                "app": app_name,
-                "status": "error",
-                "error": str(e)
-            }
-            self.send_message(error, max_retries=3)
-            return False
+            if not is_initial:
+                # Track removed apps to clean cache
+                removed_apps = set(self.apps.keys()) - set(new_apps.keys())
+                for app_name in removed_apps:
+                    if app_name in self.icon_cache:
+                        del self.icon_cache[app_name]
+                        self.icon_cache_order.remove(app_name)
+                        self.logger.info(f"Removed {app_name} icon from cache (app removed)")
+            
+            # Update apps
+            self.apps.update(new_apps)
+            
+            # Track which icons we need
+            self.pending_icons.clear()
+            for app_name, app_data in new_apps.items():
+                if app_data.get("i", False) and app_name not in self.icon_cache:
+                    self.pending_icons.add(app_name)
+                    self.request_icon(app_name)
+            
+            if is_initial:
+                self.initial_config_received = True
+                self._check_ui_state()
+            
+            self.logger.info(f"Updated apps: {list(self.apps.keys())}")
+            gc.collect()  # Clean up after updates
+            
         except Exception as e:
-            self.logger.error(f"Unexpected error processing icon data for {app_name}: {str(e)}")
-            error = {
-                "type": "icon_parsed",
-                "app": app_name,
-                "status": "error",
-                "error": f"Internal error: {str(e)}"
-            }
-            self.send_message(error, max_retries=3)
-            return False
+            self.logger.error(f"Error handling apps update: {str(e)}")
+
+    def _handle_volume_update(self, vol):
+        """Handle incoming volume update"""
+        try:
+            self.logger.info(f"Received volume update: {vol}")
+            # Implement volume update logic here
+        except Exception as e:
+            self.logger.error(f"Error handling volume update: {str(e)}")
+
+    def send_heartbeat(self):
+        """
+        Send a heartbeat message to confirm connection liveness.
+        """
+        heartbeat_msg = {"type": "heartbeat"}
+        return self.send_message(MSG_HEARTBEAT)
+
+    def _check_ui_state(self):
+        """Check if conditions are met to switch to full UI"""
+        try:
+            if (self.ui_manager and self.connected and 
+                self.initial_config_received and not self.pending_icons):
+                self.logger.info("All conditions met - switching to full UI")
+                
+                # First update all apps in the UI
+                if self.ui_manager:
+                    # Set state to SIMPLE_MEDIA while we update
+                    self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
+                    
+                    # Clear and update all apps
+                    if hasattr(self.ui_manager, 'clear_apps'):
+                        self.ui_manager.clear_apps()
+                    
+                    # Add all apps with their icons
+                    for app_name, app_data in self.apps.items():
+                        icon_data = self.icon_cache.get(app_name)
+                        if icon_data:
+                            self.ui_manager.update_app_icon(app_name, icon_data)
+                            # Set volume if available
+                            if "v" in app_data:
+                                self.ui_manager.handle_volume_update(app_name, app_data["v"])
+                
+                    # Then switch to full UI mode
+                    self.ui_manager.set_state(UIState.FULL_UI)
+            else:
+                self.logger.info("Conditions for full UI not met yet")
+                if self.ui_manager:
+                    self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
+        except Exception as e:
+            self.logger.error(f"Error checking UI state: {str(e)}")
+            # On error, stay in SIMPLE_MEDIA mode
+            if self.ui_manager:
+                self.ui_manager.set_state(UIState.SIMPLE_MEDIA)

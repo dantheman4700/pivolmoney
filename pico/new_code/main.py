@@ -141,7 +141,10 @@ def main():
             if line:
                 try:
                     data = json.loads(line)
-                    usb_manager.handle_message(data)
+                    # Extract message type and payload from data
+                    msg_type = data.get("t")
+                    payload = data.get("p", {})
+                    usb_manager.handle_message(msg_type, payload)
                 except Exception as e:
                     logger.error(f"Error processing message: {str(e)}")
 

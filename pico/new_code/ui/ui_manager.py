@@ -805,3 +805,31 @@ class UIManager:
                 self.encoder_callback('vol_down')
             # Update UI if needed
             self.draw_ui()
+
+    def clear_apps(self):
+        """Clear all apps from the UI and internal state"""
+        self.apps.clear()
+        self.selected_app = None
+        self.current_page = 0
+        # Redraw UI to reflect empty state
+        self.draw_ui()
+        gc.collect()  # Clean up memory
+        
+    def update_app_icon(self, app_name, icon_data):
+        """Update an app's icon in the UI"""
+        if app_name not in self.apps:
+            self.apps[app_name] = {}
+        self.apps[app_name]["icon"] = icon_data
+        # Only redraw if we're in full UI mode and this app is visible
+        if self.current_state == UIState.FULL_UI:
+            self.draw_ui()
+        gc.collect()  # Clean up memory after icon update
+
+    def remove_app(self, app_name):
+        """Remove a single app from the UI"""
+        if app_name in self.apps:
+            del self.apps[app_name]
+            if self.selected_app == app_name:
+                self.selected_app = None
+            self.draw_ui()
+            gc.collect()  # Clean up memory

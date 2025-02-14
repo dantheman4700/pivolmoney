@@ -118,24 +118,36 @@ class IconHandler:
                     # Create memory DC
                     memdc = win32gui.CreateCompatibleDC(screen_dc)
                     
-                    # Create bitmap
-                    hbmp = win32gui.CreateCompatibleBitmap(screen_dc, self.icon_size[0], self.icon_size[1])
+                    # Create bitmap with 32-bit color depth for alpha channel
+                    bmi = win32gui.BITMAPINFO()
+                    bmi.bmiHeader.biSize = 40  # size of BITMAPINFOHEADER
+                    bmi.bmiHeader.biWidth = self.icon_size[0]
+                    bmi.bmiHeader.biHeight = -self.icon_size[1]  # Negative for top-down
+                    bmi.bmiHeader.biPlanes = 1
+                    bmi.bmiHeader.biBitCount = 32
+                    bmi.bmiHeader.biCompression = win32con.BI_RGB
+                    
+                    hbmp = win32gui.CreateDIBSection(memdc, bmi, win32con.DIB_RGB_COLORS)
                     
                     # Select bitmap into DC
                     old_bitmap = win32gui.SelectObject(memdc, hbmp)
                     
-                    # Fill background with black (for transparency)
-                    brush = win32gui.CreateSolidBrush(win32api.RGB(0, 0, 0))
+                    # Fill with white for better visibility
+                    brush = win32gui.CreateSolidBrush(win32api.RGB(255, 255, 255))
                     win32gui.FillRect(memdc, (0, 0, self.icon_size[0], self.icon_size[1]), brush)
                     
-                    # Draw the icon
-                    win32gui.DrawIconEx(memdc, 0, 0, hicon, self.icon_size[0], self.icon_size[1], 0, None, win32con.DI_NORMAL)
+                    # Draw the icon with DI_NORMAL flag
+                    win32gui.DrawIconEx(
+                        memdc, 0, 0, hicon,
+                        self.icon_size[0], self.icon_size[1],
+                        0, None, win32con.DI_NORMAL | win32con.DI_DEFAULTSIZE
+                    )
                     
                     # Get bitmap bits using win32ui
                     bmp = win32ui.CreateBitmapFromHandle(hbmp)
                     bmpstr = bmp.GetBitmapBits(True)
                     
-                    # Convert to PIL Image
+                    # Convert to PIL Image with alpha channel
                     img = Image.frombuffer(
                         'RGBA',
                         (self.icon_size[0], self.icon_size[1]),
@@ -149,8 +161,9 @@ class IconHandler:
                     # Debug: Save first image to check format
                     img.save("debug_icon_rgba.png")
                     
-                    # Convert to RGB and save for debug
-                    img_rgb = img.convert('RGB')
+                    # Convert to RGB (blend with white background)
+                    white_bg = Image.new('RGB', img.size, (255, 255, 255))
+                    img_rgb = Image.alpha_composite(white_bg.convert('RGBA'), img).convert('RGB')
                     img_rgb.save("debug_icon_rgb.png")
                     
                     # Convert to RGB565
@@ -189,22 +202,41 @@ class IconHandler:
                     print(f"Successfully extracted icon for window {window_text}")
                     
                     # Clean up resources
-                    win32gui.DeleteObject(brush)
-                    win32gui.DeleteObject(hbmp)
-                    win32gui.SelectObject(memdc, old_bitmap)
-                    win32gui.DeleteDC(memdc)
-                    win32gui.ReleaseDC(0, screen_dc)
-                    win32gui.DestroyIcon(hicon)
+                    try:
+                        win32gui.DeleteObject(brush)
+                    except:
+                        pass
+                    try:
+                        win32gui.DeleteObject(hbmp)
+                    except:
+                        pass
+                    try:
+                        win32gui.SelectObject(memdc, old_bitmap)
+                    except:
+                        pass
+                    try:
+                        win32gui.DeleteDC(memdc)
+                    except:
+                        pass
+                    try:
+                        win32gui.ReleaseDC(0, screen_dc)
+                    except:
+                        pass
+                    try:
+                        # Only try to destroy the icon if it's not a window class icon
+                        if hicon != win32gui.GetClassLong(hwnd, win32con.GCL_HICON) and \
+                           hicon != win32gui.GetClassLong(hwnd, win32con.GCL_HICONSM):
+                            win32gui.DestroyIcon(hicon)
+                    except:
+                        pass
                     
                     return rgb565_data
                     
                 except Exception as e:
                     print(f"Error converting icon to image for {window_text}: {e}")
-                    try:
-                        win32gui.DestroyIcon(hicon)
-                    except:
-                        pass
-                    
+                    # Don't try to destroy the icon here since it might be a class icon
+                    return None
+            
             else:
                 print(f"No icon found for window {window_text}")
             

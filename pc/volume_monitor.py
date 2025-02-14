@@ -6,41 +6,42 @@ from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 import serial.tools.list_ports
 import sys
 import base64
+from serial_manager import (
+    SerialManager, MSG_HEARTBEAT, MSG_CONNECT, MSG_ICON_REQ,
+    MSG_ICON_TRANSFER, MSG_UPDATE, MSG_ERROR, MSG_ACK,
+    MSG_INITIAL_CONFIG, MSG_VOLUME_CMD
+)
 
 class VolumeMonitor:
     def __init__(self):
-        self.com_port = None
-        self.serial = None
+        self.serial_manager = None
         self.connected = False
-        self.initialized = False  # Track if initial config is done
+        self.initialized = False
         self.last_app_list = {}
-        self.update_interval = 1.0  # Check more frequently but only send on changes
+        self.update_interval = 1.0
         self.last_update = 0
         self.icon_handler = IconHandler()
-        self.last_icon_send = 0
-        self.icon_send_timeout = 1.0
-        self.sent_icons = set()
+        self.last_heartbeat = 0
+        self.heartbeat_interval = 1.0  # Send heartbeat every second
+        self.update_debounce = 0.1  # 100ms debounce for updates
+        self.last_state_update = 0
         print("VolumeMonitor initialized")
         
     def find_pico_com_port(self):
         """Find the COM port for the Pico device"""
-        # List all COM ports
         ports = list(serial.tools.list_ports.comports())
         pico_ports = []
         
         for port in ports:
-            # Look for Pico's specific VID:PID in hardware ID
             if "VID:PID=2E8A:0005" in port.hwid:
                 pico_ports.append(port.device)
         
         if pico_ports:
-            # Sort ports in reverse order to try the higher number first (COM11 before COM10)
             pico_ports.sort(reverse=True)
             
-            # Try each found port
             for port in pico_ports:
                 print(f"Attempting connection on {port}")
-                self.com_port = port
+                self.serial_manager = SerialManager(port)
                 if self.try_connect():
                     print(f"Successfully connected on {port}")
                     return True
@@ -52,47 +53,23 @@ class VolumeMonitor:
         return False
         
     def try_connect(self):
-        """Try to connect to a specific COM port"""
+        """Try to connect and establish handshake"""
         try:
-            # Close any existing connection
-            if self.serial and self.serial.is_open:
-                self.serial.close()
-                time.sleep(1)
-            
-            # Simple serial connection like Thonny uses
-            self.serial = serial.Serial(
-                port=self.com_port,
-                baudrate=115200,
-                timeout=1
-            )
-            
-            # Clear any pending data
-            self.serial.reset_input_buffer()
-            self.serial.reset_output_buffer()
-            time.sleep(0.1)
-            
-            # Try to send test message with retry
-            max_attempts = 3
-            for attempt in range(max_attempts):
-                if self.send_message({"type": "test"}):
-                    # Wait for response
-                    start_time = time.time()
-                    while time.time() - start_time < 5:  # 5 second timeout
-                        if self.serial.in_waiting:
-                            try:
-                                line = self.serial.readline().decode().strip()
-                                if line:
-                                    try:
-                                        data = json.loads(line)
-                                        if data.get("type") == "test_response" and data.get("status") == "ok":
-                                            self.connected = True
-                                            return True
-                                    except ValueError:  # Catches JSON decode errors
-                                        pass
-                            except Exception as e:
-                                pass
-                        time.sleep(0.1)
-                time.sleep(0.5)  # Wait before retry
+            # Send connection message
+            if self.serial_manager.send_message(MSG_CONNECT):
+                # Wait for acknowledgment and initial config request
+                start_time = time.time()
+                while time.time() - start_time < 5:  # 5 second timeout
+                    msg_type, payload = self.serial_manager.read_message()
+                    if msg_type == MSG_ACK:
+                        self.connected = True
+                        self.last_heartbeat = time.time()
+                    elif msg_type == MSG_INITIAL_CONFIG and self.connected:
+                        # Send initial configuration
+                        if self.send_initial_config():
+                            self.initialized = True
+                            return True
+                    time.sleep(0.1)
             
             self.disconnect()
             return False
@@ -105,155 +82,160 @@ class VolumeMonitor:
     def disconnect(self):
         """Safely disconnect from the device"""
         self.connected = False
-        if self.serial:
-            try:
-                self.serial.close()
-            except:
-                pass
-            self.serial = None
-            time.sleep(0.1)
-        # Clear icon cache and sent icons tracking on disconnect
+        self.initialized = False
+        if self.serial_manager:
+            self.serial_manager.close()
+            self.serial_manager = None
         self.icon_handler.clear_cache()
-        self.sent_icons.clear()
             
-    def send_message(self, data, icon_data=None):
-        """Send message to Pico"""
-        if not self.serial:
-            return False
-            
+    def send_initial_config(self):
+        """Send initial configuration to Pico"""
         try:
-            # Send the JSON message
-            message = json.dumps(data) + '\n'
-            self.serial.write(message.encode())
-            self.serial.flush()
+            app_volumes, _ = self.get_application_volumes()
             
-            if icon_data:
-                current_time = time.time()
-                if current_time - self.last_icon_send < self.icon_send_timeout:
-                    time.sleep(self.icon_send_timeout - (current_time - self.last_icon_send))
-                
-                # Verify icon data size
-                if len(icon_data) != 4608:  # 48x48x2 bytes
-                    print(f"Invalid icon data size: {len(icon_data)} bytes")
-                    return False
-                
-                # Clear any pending data before starting icon transfer
-                self.serial.reset_input_buffer()
-                
-                # Log the message and icon data size
-                print(f"Sent message before icon: {message.strip()}")
-                print(f"Icon data size for {data.get('app', 'unknown')}: {len(icon_data)} bytes")
-                
-                # Wait for ready_for_icon response or icon_parsed (in case it was already processed)
-                start_time = time.time()
-                ready_received = False
-                icon_parsed = False
-                
-                while time.time() - start_time < 5:  # 5 second timeout
-                    if self.serial.in_waiting:
-                        try:
-                            line = self.serial.readline().decode().strip()
-                            if line:
-                                print(f"Received while waiting for ready_for_icon: {line}")
-                                try:
-                                    response = json.loads(line)
-                                    
-                                    # Check for icon_parsed first
-                                    if (response.get("type") == "icon_parsed" and 
-                                        response.get("app") == data.get("app")):
-                                        if response.get("status") == "ok":
-                                            print(f"Icon already processed for {data.get('app')}")
-                                            self.last_icon_send = time.time()
-                                            self.sent_icons.add(data.get("app"))
-                                            return True
-                                        else:
-                                            print(f"Icon parsing failed for {data.get('app')}: {response.get('error', 'Unknown error')}")
-                                            return False
-                                            
-                                    # Then check for ready_for_icon
-                                    elif (response.get("type") == "ready_for_icon" and 
-                                          response.get("app") == data.get("app")):
-                                        ready_received = True
-                                        break
-                                except json.JSONDecodeError:
-                                    print(f"Invalid JSON response: {line}")
-                                    continue
-                                    
-                        except Exception as e:
-                            print(f"Error reading ready_for_icon response: {e}")
-                    time.sleep(0.1)
-                
-                if not ready_received:
-                    print(f"Timeout waiting for ready_for_icon for {data.get('app')}")
-                    return False
-                
-                # Clear buffer again before sending icon data
-                self.serial.reset_input_buffer()
-                
-                # Send icon data using base64 encoding
-                try:
-                    # Convert binary data to base64
-                    b64_data = base64.b64encode(bytes(icon_data)).decode('ascii')
-                    
-                    # Send as JSON message
-                    icon_message = {
-                        "type": "icon_data_b64",
-                        "app": data.get("app"),
-                        "data": b64_data
-                    }
-                    message = json.dumps(icon_message) + '\n'
-                    self.serial.write(message.encode())
-                    self.serial.flush()
-                    
-                    print(f"Sent base64 icon data for: {data.get('app', 'unknown')}")
-                    
-                    # Wait for icon_parsed confirmation
-                    parse_start = time.time()
-                    while time.time() - parse_start < 15:  # 15 second timeout
-                        if self.serial.in_waiting:
-                            try:
-                                line = self.serial.readline().decode().strip()
-                                if line:
-                                    print(f"Received while waiting for icon_parsed: {line}")
-                                    try:
-                                        response = json.loads(line)
-                                        if (response.get("type") == "icon_parsed" and 
-                                            response.get("app") == data.get("app")):
-                                            if response.get("status") == "ok":
-                                                print(f"Icon successfully parsed for {data.get('app')}")
-                                                self.last_icon_send = time.time()
-                                                self.sent_icons.add(data.get("app"))
-                                                return True
-                                            else:
-                                                print(f"Icon parsing failed for {data.get('app')}: {response.get('error', 'Unknown error')}")
-                                                return False
-                                    except json.JSONDecodeError:
-                                        print(f"Invalid JSON response while waiting for parse confirmation: {line}")
-                                        continue
-                            except Exception as e:
-                                print(f"Error reading icon_parsed response: {e}")
-                        time.sleep(0.1)
-                    print(f"Timeout waiting for icon_parsed for {data.get('app')} after 15 seconds")
-                    return False
-                    
-                except Exception as e:
-                    print(f"Error sending icon data: {e}")
-                    return False
-            else:
-                print(f"Sent: {message.strip()}")
+            # Convert to lean format
+            lean_apps = {}
+            for app in app_volumes:
+                lean_apps[app["name"]] = {
+                    "v": app["volume"],  # Short key for volume
+                    "m": app["muted"],   # Short key for muted
+                    "i": app["has_icon"] # Short key for has_icon
+                }
+            
+            return self.serial_manager.send_message(MSG_INITIAL_CONFIG, {
+                "apps": lean_apps
+            })
+        except Exception as e:
+            print(f"Error sending initial config: {e}")
+            return False
+
+    def send_app_update(self, app_volumes):
+        """Send app update using lean protocol"""
+        try:
+            # Debounce updates
+            current_time = time.time()
+            if current_time - self.last_state_update < self.update_debounce:
                 return True
                 
-        except Exception as e:
-            print(f"Failed to send message: {e}")
-            self.disconnect()
-            return False
+            # Convert to lean format and compare with last state
+            lean_apps = {}
+            for app in app_volumes:
+                lean_apps[app["name"]] = {
+                    "v": app["volume"],  # Short key for volume
+                    "m": app["muted"],   # Short key for muted
+                    "i": app["has_icon"] # Short key for has_icon
+                }
             
+            # Only send update if apps have changed
+            if lean_apps != self.last_app_list:
+                success = self.serial_manager.send_message(MSG_UPDATE, {
+                    "apps": lean_apps
+                })
+                
+                if success:
+                    self.last_state_update = current_time
+                    self.last_app_list = lean_apps
+                
+                return success
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error sending app update: {e}")
+            return False
+
+    def handle_message(self, msg_type, payload):
+        """Handle incoming messages using lean protocol"""
+        try:
+            if msg_type == MSG_ICON_REQ:
+                app_name = payload.get("n")  # Short key for name
+                if app_name:
+                    icon_data = self.icon_handler.get_window_icon(app_name)
+                    if not icon_data:
+                        icon_data = self.icon_handler.get_default_icon()
+                    if icon_data:
+                        self.serial_manager.send_icon(app_name, icon_data)
+                        
+            elif msg_type == MSG_HEARTBEAT:
+                # Respond to heartbeat for bi-directional monitoring
+                self.serial_manager.send_heartbeat()
+                
+        except Exception as e:
+            print(f"Error handling message: {e}")
+            
+    def update(self):
+        """Main update loop with lean protocol"""
+        if not self.connected:
+            if not self.connect():
+                time.sleep(1)
+                return
+                
+        try:
+            # Check connection health
+            if not self.serial_manager.check_connection():
+                print("Connection lost - disconnecting")
+                self.disconnect()
+                return
+                
+            # Check for incoming messages
+            msg_type, payload = self.serial_manager.read_message()
+            if msg_type:
+                self.handle_message(msg_type, payload)
+                
+            current_time = time.time()
+            
+            # Send heartbeat
+            if current_time - self.last_heartbeat >= self.heartbeat_interval:
+                if self.serial_manager.send_heartbeat():
+                    self.last_heartbeat = current_time
+                else:
+                    self.disconnect()
+                    return
+                    
+            # Check for app changes
+            if current_time - self.last_update >= self.update_interval:
+                app_volumes, icons = self.get_application_volumes()
+                
+                # Convert to dict for easier comparison
+                current_apps = {app["name"]: app for app in app_volumes}
+                
+                # Check for any changes in volume or mute state only
+                # Ignore icon state changes to prevent icon request loops
+                has_changes = False
+                if len(current_apps) != len(self.last_app_list):
+                    has_changes = True
+                else:
+                    for app_name, app_data in current_apps.items():
+                        if app_name not in self.last_app_list:
+                            has_changes = True
+                            break
+                        last_app = self.last_app_list[app_name]
+                        if (app_data["volume"] != last_app.get("volume") or 
+                            app_data["muted"] != last_app.get("muted")):
+                            has_changes = True
+                            break
+                
+                if has_changes:
+                    if self.send_app_update(app_volumes):
+                        self.last_app_list = current_apps
+                    else:
+                        self.disconnect()
+                        return
+                        
+                self.last_update = current_time
+                
+            time.sleep(0.01)
+            
+        except Exception as e:
+            print(f"Update error: {e}")
+            self.disconnect()
+
     def get_application_volumes(self):
         """Get list of applications and their volumes"""
         sessions = AudioUtilities.GetAllSessions()
         app_volumes = []
         icons_to_send = []
-        seen_apps = set()  # Track unique apps
+        seen_apps = set()
         
         for session in sessions:
             try:
@@ -262,15 +244,12 @@ class VolumeMonitor:
                     process_name = session.Process.name()
                     pid = session.Process.pid
                     
-                    # Skip if we've already processed this app
                     if process_name in seen_apps:
                         continue
                     seen_apps.add(process_name)
                     
-                    # Get icon data
                     icon_data = self.icon_handler.get_icon_for_app(process_name, pid)
                     
-                    # Add basic app info
                     app_volumes.append({
                         "name": process_name,
                         "volume": int(volume.GetMasterVolume() * 100),
@@ -278,7 +257,6 @@ class VolumeMonitor:
                         "has_icon": icon_data is not None
                     })
                     
-                    # Queue icon for separate transmission
                     if icon_data:
                         icons_to_send.append({
                             "name": process_name,
@@ -289,285 +267,11 @@ class VolumeMonitor:
                 continue
                 
         return app_volumes, icons_to_send
-        
-    def handle_message(self, data):
-        """Handle incoming messages from Pico"""
-        try:
-            msg_type = data.get("type", "")
-            print(f"Processing message type: {msg_type} (initialized={self.initialized}, connected={self.connected})")
-            
-            if msg_type == "request_apps" or msg_type == "request_initial_config":
-                print("Handling initial config request")
-                app_volumes, icons = self.get_application_volumes()
-                
-                # Send app info first and wait for it to be processed
-                if not self.send_message({
-                    "type": "initial_config",
-                    "data": app_volumes
-                }):
-                    print("Failed to send initial config")
-                    return
-                
-                # Initialize last_app_list to prevent duplicate app_changes
-                self.last_app_list = {app["name"]: app for app in app_volumes}
-                
-                time.sleep(0.5)
-                
-                # Clear sent icons tracking before sending new batch
-                self.sent_icons.clear()
-                
-                # Then send each icon separately with proper framing
-                for icon_data in icons:
-                    if not icon_data.get("icon"):  # Skip if no icon data
-                        continue
-                        
-                    # Skip if we've already sent this icon in this session
-                    if icon_data["name"] in self.sent_icons:
-                        print(f"Skipping already sent icon for {icon_data['name']}")
-                        continue
-                        
-                    print(f"Attempting to send icon for {icon_data['name']} ({len(self.sent_icons)}/{len(icons)} sent)")
-                    if self.send_icon_data(icon_data["name"]):
-                        print(f"Successfully sent icon for {icon_data['name']}")
-                        self.sent_icons.add(icon_data["name"])
-                    else:
-                        print(f"Failed to send icon for {icon_data['name']}")
-                        break
-                    
-                    time.sleep(0.5)  # Small delay between icons
-                    
-                # Send initialization complete message only after all icons are processed
-                if len(self.sent_icons) == sum(1 for icon in icons if icon.get("icon")):
-                    print("All icons sent successfully, sending init_complete")
-                    if not self.send_message({
-                        "type": "init_complete"
-                    }):
-                        print("Failed to send init_complete message")
-                else:
-                    print(f"Not all icons were sent successfully ({len(self.sent_icons)} of {len(icons)} sent)")
-
-            elif msg_type == "ready":
-                print(f"Received ready message, current state: initialized={self.initialized}, connected={self.connected}")
-                if not self.initialized:
-                    print("Device ready for updates - starting monitoring")
-                    self.initialized = True
-                    self.last_update = time.time() - self.update_interval  # Force immediate first check
-                else:
-                    print("Device confirmed ready state")
-
-        except Exception as e:
-            print(f"Error handling message: {e}")
-            
-    def update(self):
-        """Main update loop"""
-        if not self.connected:
-            if not self.connect():
-                time.sleep(1)  # Wait before retry
-                return
-                
-        try:
-            # Check for incoming messages
-            if self.serial and self.serial.is_open:
-                try:
-                    # Read with smaller chunks
-                    if self.serial.in_waiting:
-                        byte = self.serial.read(1)
-                        if byte:
-                            response_buffer = bytearray()
-                            response_buffer.extend(byte)
-                            
-                            # Read until newline
-                            while byte != b'\n' and self.serial.in_waiting:
-                                byte = self.serial.read(1)
-                                if byte:
-                                    response_buffer.extend(byte)
-                                    
-                            if byte == b'\n':
-                                try:
-                                    line = response_buffer.decode().strip()
-                                    if line:
-                                        data = json.loads(line)
-                                        self.handle_message(data)
-                                except ValueError as e:
-                                    print(f"Invalid JSON: {e}")
-                                except Exception as e:
-                                    print(f"Error processing message: {e}")
-                                    
-                except Exception as e:
-                    print(f"Error reading message: {e}")
-                    self.disconnect()
-                    return
-                    
-            # Only send updates if we're fully initialized
-            if self.initialized and self.connected:
-                # Check for app changes
-                current_time = time.time()
-                if current_time - self.last_update >= self.update_interval:
-                    print(f"Checking for app changes... (initialized={self.initialized}, connected={self.connected})")
-                    app_volumes, icons = self.get_application_volumes()
-                    
-                    # Convert to dict for easier comparison
-                    current_apps = {app["name"]: app for app in app_volumes}
-                    
-                    # Check for changes
-                    changes = {
-                        "added": [],
-                        "removed": [],
-                        "updated": []
-                    }
-                    
-                    # Find added and updated apps
-                    for name, app in current_apps.items():
-                        if name not in self.last_app_list:
-                            print(f"New app found: {name}")
-                            changes["added"].append(app)
-                        elif (app["volume"] != self.last_app_list[name]["volume"] or 
-                              app["muted"] != self.last_app_list[name]["muted"]):
-                            print(f"App updated: {name}")
-                            changes["updated"].append(app)
-                    
-                    # Find removed apps
-                    for name in self.last_app_list:
-                        if name not in current_apps:
-                            print(f"App removed: {name}")
-                            changes["removed"].append(name)
-                    
-                    # Send updates if there are any changes
-                    if changes["added"] or changes["removed"] or changes["updated"]:
-                        print("Sending app changes...")
-                        # Send app changes
-                        if not self.send_message({
-                            "type": "app_changes",
-                            "added": changes["added"],
-                            "removed": changes["removed"],
-                            "updated": changes["updated"]
-                        }):
-                            print("Failed to send app changes")
-                            self.disconnect()
-                            return
-                        
-                    # Always update last_app_list and timer
-                    self.last_app_list = current_apps
-                    self.last_update = current_time
-                    
-            time.sleep(0.01)  # Small delay
-            
-        except Exception as e:
-            print(f"Update error: {e}")
-            self.disconnect()
-
-    def send_icon_data(self, app_name, max_retries=3, retry_delay=1.0):
-        """Send icon data for an app with retry logic"""
-        try:
-            if not self.serial or not self.serial.is_open:
-                print("Cannot send icon data: Serial connection not open")
-                return False
-                
-            # Get icon data
-            icon_data = self.icon_handler.get_window_icon(app_name)
-            if not icon_data:
-                print(f"Failed to get icon for {app_name}, using default")
-                icon_data = self.icon_handler.get_default_icon()
-            
-            if icon_data:
-                for attempt in range(max_retries):
-                    try:
-                        # Send icon data message
-                        if not self.send_message({
-                            "type": "icon_data",
-                            "app": app_name
-                        }):
-                            print(f"Failed to send icon_data message for {app_name}")
-                            continue
-
-                        # Wait for ready_for_icon response
-                        ready_received = False
-                        start_time = time.time()
-                        while time.time() - start_time < 5:  # 5 second timeout
-                            if self.serial.in_waiting:
-                                try:
-                                    line = self.serial.readline().decode().strip()
-                                    if line:
-                                        print(f"Received while waiting for ready_for_icon: {line}")
-                                        response = json.loads(line)
-                                        if (response.get("type") == "ready_for_icon" and 
-                                            response.get("app") == app_name):
-                                            ready_received = True
-                                            break
-                                except Exception as e:
-                                    print(f"Error reading ready_for_icon response: {e}")
-                            time.sleep(0.1)
-
-                        if not ready_received:
-                            print(f"Timeout waiting for ready_for_icon for {app_name}")
-                            if attempt < max_retries - 1:
-                                time.sleep(retry_delay)
-                            continue
-
-                        # Convert to base64
-                        b64_data = base64.b64encode(bytes(icon_data)).decode('ascii')
-                        
-                        # Send as JSON message
-                        icon_message = {
-                            "type": "icon_data_b64",
-                            "app": app_name,
-                            "data": b64_data
-                        }
-                        if not self.send_message(icon_message):
-                            print(f"Failed to send base64 data for {app_name}")
-                            continue
-
-                        # Wait for icon_parsed confirmation
-                        parse_start = time.time()
-                        while time.time() - parse_start < 15:  # 15 second timeout
-                            if self.serial.in_waiting:
-                                try:
-                                    line = self.serial.readline().decode().strip()
-                                    if line:
-                                        print(f"Received while waiting for icon_parsed: {line}")
-                                        response = json.loads(line)
-                                        if (response.get("type") == "icon_parsed" and 
-                                            response.get("app") == app_name):
-                                            if response.get("status") == "ok":
-                                                print(f"Icon successfully parsed for {app_name}")
-                                                return True
-                                            else:
-                                                error = response.get("error", "Unknown error")
-                                                print(f"Icon parsing failed for {app_name}: {error}")
-                                                break
-                                except Exception as e:
-                                    print(f"Error reading icon_parsed response: {e}")
-                            time.sleep(0.1)
-
-                        print(f"Timeout waiting for icon_parsed for {app_name}")
-                        if attempt < max_retries - 1:
-                            print(f"Retrying... (attempt {attempt + 1}/{max_retries})")
-                            time.sleep(retry_delay)
-                            continue
-                        
-                    except Exception as e:
-                        print(f"Error in attempt {attempt + 1}: {e}")
-                        if attempt < max_retries - 1:
-                            time.sleep(retry_delay)
-                            continue
-
-                print(f"Failed to send icon for {app_name} after {max_retries} attempts")
-                return False
-
-        except Exception as e:
-            print(f"Error sending icon data for {app_name}: {str(e)}")
-        return False
 
     def connect(self):
         """Connect to the Pico device"""
         print("Attempting to connect...")
-        if not self.find_pico_com_port():
-            return False
-            
-        # Just establish connection and wait for request_apps
-        self.connected = True
-        print("Connected to Pico, waiting for request_apps")
-        return True
+        return self.find_pico_com_port()
 
 def main():
     monitor = VolumeMonitor()
