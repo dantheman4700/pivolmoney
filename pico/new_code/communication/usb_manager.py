@@ -407,19 +407,27 @@ class USBManager:
                         self.icon_cache_order.remove(app_name)
                         self.logger.info(f"Removed {app_name} icon from cache (app removed)")
             
-            # Update apps
+            # Update apps while preserving icon state
+            for app_name, app_data in new_apps.items():
+                if app_name in self.apps:
+                    # Preserve icon data for existing apps
+                    new_apps[app_name]["icon"] = self.apps[app_name].get("icon")
+            
+            # Update apps dictionary
             self.apps.update(new_apps)
             
             # Track which icons we need
-            self.pending_icons.clear()
             for app_name, app_data in new_apps.items():
                 if app_data.get("i", False) and app_name not in self.icon_cache:
-                    self.pending_icons.add(app_name)
-                    self.request_icon(app_name)
+                    if app_name not in self.pending_icons:
+                        self.pending_icons.add(app_name)
+                        self.request_icon(app_name)
             
             if is_initial:
                 self.initial_config_received = True
-                self._check_ui_state()
+            
+            # Check UI state after update
+            self._check_ui_state()
             
             self.logger.info(f"Updated apps: {list(self.apps.keys())}")
             gc.collect()  # Clean up after updates
@@ -446,32 +454,39 @@ class USBManager:
         """Check if conditions are met to switch to full UI"""
         try:
             if (self.ui_manager and self.connected and 
-                self.initial_config_received and not self.pending_icons):
-                self.logger.info("All conditions met - switching to full UI")
+                self.initial_config_received):
                 
-                # First update all apps in the UI
-                if self.ui_manager:
-                    # Set state to SIMPLE_MEDIA while we update
-                    self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
-                    
-                    # Clear and update all apps
-                    if hasattr(self.ui_manager, 'clear_apps'):
-                        self.ui_manager.clear_apps()
-                    
-                    # Add all apps with their icons
-                    for app_name, app_data in self.apps.items():
-                        icon_data = self.icon_cache.get(app_name)
-                        if icon_data:
-                            self.ui_manager.update_app_icon(app_name, icon_data)
-                            # Set volume if available
-                            if "v" in app_data:
-                                self.ui_manager.handle_volume_update(app_name, app_data["v"])
+                # Check if we have all required icons
+                missing_icons = False
+                for app_name, app_data in self.apps.items():
+                    if app_data.get("i", False) and app_name not in self.icon_cache:
+                        missing_icons = True
+                        break
                 
-                    # Then switch to full UI mode
-                    self.ui_manager.set_state(UIState.FULL_UI)
+                if not missing_icons:
+                    self.logger.info("All conditions met - switching to full UI")
+                    
+                    # First update all apps in the UI
+                    if self.ui_manager:
+                        # Add all apps with their icons
+                        for app_name, app_data in self.apps.items():
+                            icon_data = self.icon_cache.get(app_name)
+                            if icon_data:
+                                self.ui_manager.update_app_icon(app_name, icon_data)
+                                # Set volume if available
+                                if "v" in app_data:
+                                    self.ui_manager.handle_volume_update(app_name, app_data["v"])
+                    
+                        # Then switch to full UI mode if not already in it
+                        if self.ui_manager.current_state != UIState.FULL_UI:
+                            self.ui_manager.set_state(UIState.FULL_UI)
+                else:
+                    self.logger.info("Waiting for missing icons")
+                    if self.ui_manager and self.ui_manager.current_state == UIState.FULL_UI:
+                        self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
             else:
                 self.logger.info("Conditions for full UI not met yet")
-                if self.ui_manager:
+                if self.ui_manager and self.ui_manager.current_state == UIState.FULL_UI:
                     self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
         except Exception as e:
             self.logger.error(f"Error checking UI state: {str(e)}")
