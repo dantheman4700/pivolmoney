@@ -64,13 +64,17 @@ class VolumeMonitor:
                     if msg_type == MSG_ACK:
                         self.connected = True
                         self.last_heartbeat = time.time()
+                        print("Received connection acknowledgment")
                     elif msg_type == MSG_INITIAL_CONFIG and self.connected:
+                        print("Received initial config request")
                         # Send initial configuration
                         if self.send_initial_config():
                             self.initialized = True
+                            print("Initial configuration sent successfully")
                             return True
                     time.sleep(0.1)
             
+            print("Connection attempt failed")
             self.disconnect()
             return False
             
@@ -180,7 +184,7 @@ class VolumeMonitor:
                 
         try:
             # Check connection health
-            if not self.serial_manager.check_connection():
+            if not self.serial_manager or not self.serial_manager.check_connection():
                 print("Connection lost - disconnecting")
                 self.disconnect()
                 return
@@ -194,9 +198,14 @@ class VolumeMonitor:
             
             # Send heartbeat
             if current_time - self.last_heartbeat >= self.heartbeat_interval:
+                if not self.serial_manager:
+                    self.disconnect()
+                    return
                 if self.serial_manager.send_heartbeat():
                     self.last_heartbeat = current_time
+                    print("Heartbeat sent successfully")
                 else:
+                    print("Failed to send heartbeat")
                     self.disconnect()
                     return
                     
@@ -217,16 +226,21 @@ class VolumeMonitor:
                         if app_name not in self.last_app_list:
                             has_changes = True
                             break
-                        last_app = self.last_app_list[app_name]
+                        last_app = self.last_app_list.get(app_name, {})
                         if (app_data["volume"] != last_app.get("volume") or 
                             app_data["muted"] != last_app.get("muted")):
                             has_changes = True
                             break
                 
                 if has_changes:
+                    if not self.serial_manager:
+                        self.disconnect()
+                        return
                     if self.send_app_update(app_volumes):
                         self.last_app_list = current_apps
+                        print("App update sent successfully")
                     else:
+                        print("Failed to send app update")
                         self.disconnect()
                         return
                         

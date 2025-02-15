@@ -125,8 +125,8 @@ class IconHandler:
                     # Select bitmap into DC
                     old_bitmap = win32gui.SelectObject(memdc, hbmp)
                     
-                    # Fill background with white
-                    brush = win32gui.CreateSolidBrush(win32api.RGB(255, 255, 255))
+                    # Fill background with black
+                    brush = win32gui.CreateSolidBrush(win32api.RGB(0, 0, 0))
                     win32gui.FillRect(memdc, (0, 0, self.icon_size[0], self.icon_size[1]), brush)
                     
                     # Draw the icon
@@ -151,9 +151,9 @@ class IconHandler:
                         1
                     )
                     
-                    # Convert to RGB (blend with white background)
-                    white_bg = Image.new('RGB', img.size, (255, 255, 255))
-                    img_rgb = Image.alpha_composite(white_bg.convert('RGBA'), img).convert('RGB')
+                    # Convert to RGB (blend with black background)
+                    black_bg = Image.new('RGB', img.size, (0, 0, 0))
+                    img_rgb = Image.alpha_composite(black_bg.convert('RGBA'), img).convert('RGB')
                     
                     # Convert to RGB565
                     rgb565_data = bytearray(self.icon_size[0] * self.icon_size[1] * 2)  # 2 bytes per pixel
