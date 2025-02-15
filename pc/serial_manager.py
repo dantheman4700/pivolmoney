@@ -86,7 +86,15 @@ class SerialManager:
         icon_data should be bytes in RGB565 format.
         """
         try:
-            b64_data = binascii.b2a_base64(icon_data).decode()
+            # Add size checks and logging
+            if not icon_data:
+                self.logger.error("Icon data is None or empty")
+                return False
+                
+            self.logger.debug(f"Sending icon for {app_name}, raw size: {len(icon_data)} bytes")
+            b64_data = binascii.b2a_base64(icon_data).decode().strip()  # Strip any trailing newlines
+            self.logger.debug(f"Base64 encoded size: {len(b64_data)} bytes")
+            
             payload = {
                 "n": app_name,  # Short key for name
                 "d": b64_data   # Short key for data

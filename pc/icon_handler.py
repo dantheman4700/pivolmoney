@@ -7,6 +7,7 @@ from PIL import Image
 import io
 import struct
 import psutil
+from PIL import ImageColor
 
 def rgb_to_rgb565(r, g, b):
     """Convert RGB888 to RGB565"""
@@ -113,41 +114,33 @@ class IconHandler:
                 print(f"Got icon handle for {window_text}")
                 try:
                     # Get screen DC
-                    screen_dc = win32gui.GetDC(0)
+                    hdc = win32gui.GetDC(0)
                     
                     # Create memory DC
-                    memdc = win32gui.CreateCompatibleDC(screen_dc)
+                    memdc = win32gui.CreateCompatibleDC(hdc)
                     
-                    # Create bitmap with 32-bit color depth for alpha channel
-                    bmi = win32gui.BITMAPINFO()
-                    bmi.bmiHeader.biSize = 40  # size of BITMAPINFOHEADER
-                    bmi.bmiHeader.biWidth = self.icon_size[0]
-                    bmi.bmiHeader.biHeight = -self.icon_size[1]  # Negative for top-down
-                    bmi.bmiHeader.biPlanes = 1
-                    bmi.bmiHeader.biBitCount = 32
-                    bmi.bmiHeader.biCompression = win32con.BI_RGB
-                    
-                    hbmp = win32gui.CreateDIBSection(memdc, bmi, win32con.DIB_RGB_COLORS)
+                    # Create bitmap
+                    hbmp = win32gui.CreateCompatibleBitmap(hdc, self.icon_size[0], self.icon_size[1])
                     
                     # Select bitmap into DC
                     old_bitmap = win32gui.SelectObject(memdc, hbmp)
                     
-                    # Fill with white for better visibility
+                    # Fill background with white
                     brush = win32gui.CreateSolidBrush(win32api.RGB(255, 255, 255))
                     win32gui.FillRect(memdc, (0, 0, self.icon_size[0], self.icon_size[1]), brush)
                     
-                    # Draw the icon with DI_NORMAL flag
+                    # Draw the icon
                     win32gui.DrawIconEx(
                         memdc, 0, 0, hicon,
                         self.icon_size[0], self.icon_size[1],
-                        0, None, win32con.DI_NORMAL | win32con.DI_DEFAULTSIZE
+                        0, None, win32con.DI_NORMAL
                     )
                     
                     # Get bitmap bits using win32ui
                     bmp = win32ui.CreateBitmapFromHandle(hbmp)
                     bmpstr = bmp.GetBitmapBits(True)
                     
-                    # Convert to PIL Image with alpha channel
+                    # Convert to PIL Image
                     img = Image.frombuffer(
                         'RGBA',
                         (self.icon_size[0], self.icon_size[1]),
@@ -158,25 +151,15 @@ class IconHandler:
                         1
                     )
                     
-                    # Debug: Save first image to check format
-                    img.save("debug_icon_rgba.png")
-                    
                     # Convert to RGB (blend with white background)
                     white_bg = Image.new('RGB', img.size, (255, 255, 255))
                     img_rgb = Image.alpha_composite(white_bg.convert('RGBA'), img).convert('RGB')
-                    img_rgb.save("debug_icon_rgb.png")
                     
                     # Convert to RGB565
                     rgb565_data = bytearray(self.icon_size[0] * self.icon_size[1] * 2)  # 2 bytes per pixel
                     pixels = img_rgb.load()
                     
-                    # Debug: Print first few pixels
-                    print("First 4 pixels (RGB):")
-                    for y in range(2):
-                        for x in range(2):
-                            r, g, b = pixels[x, y]
-                            print(f"Pixel ({x},{y}): RGB({r},{g},{b})")
-                    
+                    # Convert pixels
                     for y in range(self.icon_size[1]):
                         for x in range(self.icon_size[0]):
                             r, g, b = pixels[x, y]
@@ -190,51 +173,20 @@ class IconHandler:
                             idx = (y * self.icon_size[0] + x) * 2
                             rgb565_data[idx] = (rgb565 >> 8) & 0xFF  # High byte
                             rgb565_data[idx + 1] = rgb565 & 0xFF     # Low byte
-                            
-                            # Debug first few pixels
-                            if y == 0 and x < 2:
-                                print(f"Pixel ({x},{y}): RGB({r},{g},{b}) -> RGB565({r5},{g6},{b5}) = 0x{rgb565:04X}")
-                    
-                    # Debug: Print first few bytes of RGB565 data
-                    print("First 8 bytes of RGB565 data:")
-                    print(" ".join(f"{b:02X}" for b in rgb565_data[:8]))
-                    
-                    print(f"Successfully extracted icon for window {window_text}")
                     
                     # Clean up resources
-                    try:
-                        win32gui.DeleteObject(brush)
-                    except:
-                        pass
-                    try:
-                        win32gui.DeleteObject(hbmp)
-                    except:
-                        pass
-                    try:
-                        win32gui.SelectObject(memdc, old_bitmap)
-                    except:
-                        pass
-                    try:
-                        win32gui.DeleteDC(memdc)
-                    except:
-                        pass
-                    try:
-                        win32gui.ReleaseDC(0, screen_dc)
-                    except:
-                        pass
-                    try:
-                        # Only try to destroy the icon if it's not a window class icon
-                        if hicon != win32gui.GetClassLong(hwnd, win32con.GCL_HICON) and \
-                           hicon != win32gui.GetClassLong(hwnd, win32con.GCL_HICONSM):
-                            win32gui.DestroyIcon(hicon)
-                    except:
-                        pass
+                    win32gui.DeleteObject(brush)
+                    win32gui.DeleteObject(hbmp)
+                    win32gui.SelectObject(memdc, old_bitmap)
+                    win32gui.DeleteDC(memdc)
+                    win32gui.ReleaseDC(0, hdc)
+                    win32gui.DestroyIcon(hicon)
                     
+                    print(f"Successfully extracted icon for window {window_text}")
                     return rgb565_data
                     
                 except Exception as e:
                     print(f"Error converting icon to image for {window_text}: {e}")
-                    # Don't try to destroy the icon here since it might be a class icon
                     return None
             
             else:
@@ -248,7 +200,7 @@ class IconHandler:
         """Generate a default icon when window icon cannot be retrieved"""
         try:
             # Create a simple default icon (gray square with white border)
-            img = Image.new('RGB', self.icon_size, (128, 128, 128))
+            img = Image.new('RGB', self.icon_size, (128, 128, 128))  # Use RGB tuple for gray
             pixels = img.load()
             
             # Add white border

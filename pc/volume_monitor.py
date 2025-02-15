@@ -150,7 +150,15 @@ class VolumeMonitor:
             if msg_type == MSG_ICON_REQ:
                 app_name = payload.get("n")  # Short key for name
                 if app_name:
-                    icon_data = self.icon_handler.get_window_icon(app_name)
+                    # Get the process ID for the app
+                    pid = None
+                    for session in AudioUtilities.GetAllSessions():
+                        if session.Process and session.Process.name() == app_name:
+                            pid = session.Process.pid
+                            break
+                    
+                    # Get icon using the proper method
+                    icon_data = self.icon_handler.get_icon_for_app(app_name, pid)
                     if not icon_data:
                         icon_data = self.icon_handler.get_default_icon()
                     if icon_data:

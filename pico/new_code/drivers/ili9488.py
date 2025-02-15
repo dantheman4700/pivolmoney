@@ -445,6 +445,12 @@ class ILI9488:
         try:
             self.logger.debug(f"Drawing icon at ({x}, {y}), size: {len(icon_data)} bytes")
             
+            # Validate data size
+            expected_size = width * height * 2  # 2 bytes per pixel for RGB565
+            if len(icon_data) != expected_size:
+                self.logger.error(f"Invalid icon data size: {len(icon_data)}, expected {expected_size}")
+                return
+            
             # Set drawing window
             self._write_cmd(_CASET)
             self._write_data(bytearray([x >> 8, x & 0xFF, (x + width - 1) >> 8, (x + width - 1) & 0xFF]))
@@ -464,30 +470,24 @@ class ILI9488:
             
             for i in range(0, len(icon_data), row_size):
                 row = icon_data[i:i + row_size]
+                
                 # Convert each pixel from RGB565 to RGB666
                 for j in range(0, len(row), 2):
                     if j + 1 >= len(row):
                         break
-                        
+                    
                     # Extract RGB565 values (high byte first, then low byte)
                     pixel = (row[j] << 8) | row[j + 1]
                     
-                    # Extract RGB components from RGB565
-                    r5 = (pixel >> 11) & 0x1F  # 5 bits red
-                    g6 = (pixel >> 5) & 0x3F   # 6 bits green
-                    b5 = pixel & 0x1F          # 5 bits blue
+                    # Extract RGB components
+                    r5 = (pixel >> 11) & 0x1F
+                    g6 = (pixel >> 5) & 0x3F
+                    b5 = pixel & 0x1F
                     
-                    # Convert to RGB666 using better scaling
-                    # Scale up from 5 bits to 6 bits by multiplying by 63/31
+                    # Convert to RGB666 (scale up from 5 bits to 6 bits)
                     r6 = (r5 * 63) // 31
                     # Green is already 6 bits
-                    # Scale up from 5 bits to 6 bits for blue
                     b6 = (b5 * 63) // 31
-                    
-                    # Ensure values are within bounds
-                    r6 = min(63, max(0, r6))
-                    g6 = min(63, max(0, g6))
-                    b6 = min(63, max(0, b6))
                     
                     # Store in output buffer (3 bytes per pixel)
                     rgb666_idx = (j // 2) * 3
