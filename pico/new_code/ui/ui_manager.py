@@ -94,15 +94,14 @@ class UIManager:
             
             self.touch = FT6236(i2c, PIN_TOUCH_SDA, PIN_TOUCH_SCL)
             
-            # Initialize rotary encoder with callback
+            # Initialize rotary encoder
             self.encoder = RotaryEncoder(
                 PIN_ROT_CLK,
                 PIN_ROT_DT,
                 PIN_ROT_SW,
                 min_val=0,
                 max_val=100,
-                step=1,
-                callback=self.handle_encoder_change
+                step=1
             )
             
             # Clear screen and draw initial UI
@@ -238,7 +237,6 @@ class UIManager:
         # Draw Switch Device button at top (centered text)
         button_height = 30
         button_width = LEFT_PANEL_WIDTH - 10
-        # Using similar ratio as media buttons (about 8-9 pixels per char)
         text_width = 110  # "Switch Device" (12 chars * 8.5 pixels)
         button_x = 5
         text_x = button_x + (button_width - text_width) // 2
@@ -249,14 +247,18 @@ class UIManager:
         start_x = 10  # Fixed left margin
         start_y = button_height + 20  # Start below Switch Device button
         
-        # Add master volume as first item
-        app_list = [("Master", {"name": "Master", "volume": 100})] + list(self.apps.items())
+        # Create app list with Master first, then sort other apps
+        app_list = [("Master", {"name": "Master", "volume": 100})]
+        sorted_apps = sorted(self.apps.items(), key=lambda x: x[0].lower())
+        app_list.extend(sorted_apps)
         
-        # Draw apps
-        for i, (app_name, app_data) in enumerate(app_list):
-            if i >= GRID_COLS * GRID_ROWS:
-                break
-                
+        # Calculate visible items based on grid size
+        visible_items = min(len(app_list), GRID_COLS * GRID_ROWS)
+        
+        # Draw visible apps
+        for i in range(visible_items):
+            app_name, app_data = app_list[i]
+            
             # Calculate grid position
             row = i // GRID_COLS
             col = i % GRID_COLS
@@ -265,34 +267,8 @@ class UIManager:
             x = start_x + col * (ICON_SIZE + ICON_SPACING)
             y = start_y + row * (ICON_SIZE + ICON_SPACING + 15)  # Extra space for text
             
-            # Draw icon background
-            if app_name == self.selected_app:
-                self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_GRAY)
-                # Don't draw text for selected app
-            else:
-                self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_DARK_GRAY)
-                # Draw app name (remove .exe and truncate if needed)
-                text = app_name
-                if text.lower().endswith('.exe'):
-                    text = text[:-4]
-                if len(text) > 8:
-                    text = text[:7] + '.'
-                    
-                # Calculate text width using 8 pixels per char
-                text_width = len(text) * 8
-                # Center text under icon
-                text_x = x + ((ICON_SIZE - text_width) // 2) - 2
-                text_y = y + ICON_SIZE + 5
-                self.display.draw_text(text_x, text_y, text, COLOR_WHITE, None)
-            
-            # Draw icon if available
-            if app_name != "Master" and "icon" in app_data:
-                try:
-                    # Center the 48x48 icon in the 60x60 space
-                    icon_offset = (ICON_SIZE - 48) // 2
-                    self.display.draw_icon(x + icon_offset, y + icon_offset, app_data["icon"])
-                except Exception as e:
-                    self.logger.error(f"Error drawing icon for {app_name}: {str(e)}")
+            # Draw app icon and name
+            self.draw_app_icon(app_name, app_data, x, y, app_name == self.selected_app)
         
     def draw_center_panel(self, app_name, volume):
         """Draw center panel with app name and volume"""
@@ -338,10 +314,8 @@ class UIManager:
         for i, line in enumerate(lines):
             self.display.draw_text(text_start_x, text_start_y + (i * line_height), line, COLOR_WHITE, None, scale=2)
         
-        # Draw volume (scaled x4) - left aligned like the text
-        volume_str = str(volume)
-        volume_y = text_start_y + total_text_height + 30  # Fixed spacing after text
-        self.display.draw_text(text_start_x, volume_y, volume_str, COLOR_WHITE, None, scale=4)
+        # Draw volume using the shared volume display method
+        self.draw_volume_display(volume)
         
         # Draw dividing line above media controls
         self.display.draw_hline(panel_start_x, DISPLAY_HEIGHT - media_section_height, panel_width - 2, COLOR_WHITE)
@@ -565,75 +539,40 @@ class UIManager:
             
             if 0 <= col < GRID_COLS and 0 <= row < GRID_ROWS:
                 tapped_index = row * GRID_COLS + col
-                app_list = ["Master"] + list(self.apps.keys())
+                
+                # Create app list with Master first, then sort other apps
+                app_list = [("Master", {"name": "Master", "volume": 100})]
+                sorted_apps = sorted(self.apps.items(), key=lambda x: x[0].lower())
+                app_list.extend(sorted_apps)
+                
                 if 0 <= tapped_index < len(app_list):
                     # Store previous selection
                     prev_app = self.selected_app
                     
                     # Update selection
-                    self.selected_app = app_list[tapped_index]
+                    self.selected_app = app_list[tapped_index][0]  # Get app name from tuple
                     self.logger.info(f"Selected app: {self.selected_app}")
                     
-                    # Calculate positions for both previous and new selections
-                    def get_app_position(app_name):
-                        if app_name not in app_list:
-                            return None
-                        idx = app_list.index(app_name)
-                        row = idx // GRID_COLS
-                        col = idx % GRID_COLS
-                        x = start_x + col * cell_width
-                        y = start_y + row * cell_height
-                        return (x, y)
+                    # Redraw entire app list to ensure clean state
+                    self.draw_app_list()
                     
-                    # Update previous selection if it exists
-                    if prev_app:
-                        prev_pos = get_app_position(prev_app)
-                        if prev_pos:
-                            x, y = prev_pos
-                            # Draw unselected state
-                            self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_DARK_GRAY)
-                            # Draw app name
-                            text = prev_app
-                            if text.lower().endswith('.exe'):
-                                text = text[:-4]
-                            if len(text) > 8:
-                                text = text[:7] + '.'
-                            text_width = len(text) * 8
-                            text_x = x + ((ICON_SIZE - text_width) // 2) - 2
-                            text_y = y + ICON_SIZE + 5
-                            self.display.draw_text(text_x, text_y, text, COLOR_WHITE, None)
-                            # Draw icon if available
-                            if prev_app != "Master" and "icon" in self.apps[prev_app]:
-                                try:
-                                    icon_offset = (ICON_SIZE - 48) // 2
-                                    self.display.draw_icon(x + icon_offset, y + icon_offset, self.apps[prev_app]["icon"])
-                                except Exception as e:
-                                    self.logger.error(f"Error drawing icon for {prev_app}: {str(e)}")
-                    
-                    # Update new selection
-                    new_pos = get_app_position(self.selected_app)
-                    if new_pos:
-                        x, y = new_pos
-                        # Draw selected state
-                        self.display.fill_rect(x, y, ICON_SIZE, ICON_SIZE, COLOR_GRAY)
-                        # Draw icon if available
-                        if self.selected_app != "Master" and "icon" in self.apps[self.selected_app]:
-                            try:
-                                icon_offset = (ICON_SIZE - 48) // 2
-                                self.display.draw_icon(x + icon_offset, y + icon_offset, self.apps[self.selected_app]["icon"])
-                            except Exception as e:
-                                self.logger.error(f"Error drawing icon for {self.selected_app}: {str(e)}")
-                    
-                    # Update center panel
+                    # Update center panel and encoder value
                     if self.selected_app == "Master":
                         self.draw_center_panel("Master", 100)
+                        if self.encoder:
+                            self.encoder.set_value(100)
                     else:
                         app_data = self.apps[self.selected_app]
-                        self.draw_center_panel(self.selected_app, app_data.get("volume", 0))
+                        current_volume = app_data.get("volume", 0)
+                        self.draw_center_panel(self.selected_app, current_volume)
+                        # Update encoder value to match current volume
+                        if self.encoder:
+                            self.encoder.set_value(current_volume)
+                            self.logger.info(f"Set encoder value to {current_volume}")
                     
                     if self.touch_callback:
                         self.touch_callback('app_selected', self.selected_app)
-                    
+
     def handle_side_button_touch(self, x, y):
         """Handle touch events for side buttons"""
         button_width = 90
@@ -715,27 +654,36 @@ class UIManager:
         self.encoder_callback = callback
         
     def update(self):
-        """Update the UI state"""
-        # Handle any touch events
-        self.handle_touch()
-        
-        # Handle encoder events
-        if self.encoder and self.current_state == UIState.FULL_UI:
-            value_changed, button_pressed = self.encoder.read()
-            
-            if value_changed and self.selected_app:
-                current_time = time.ticks_ms()
-                if time.ticks_diff(current_time, self.last_volume_update) >= self.volume_update_delay:
-                    # Get current volume and send update
-                    volume = self.encoder.get_value()
-                    if self.encoder_callback:
-                        self.encoder_callback('volume_change', self.selected_app, volume)
-                    self.last_volume_update = current_time
-            
-            if button_pressed and self.selected_app:
-                # Toggle mute for the selected app
-                if self.encoder_callback:
-                    self.encoder_callback('toggle_mute', self.selected_app)
+        """Update the UI state and handle inputs"""
+        try:
+            # Handle encoder updates
+            if self.encoder and self.current_state == UIState.FULL_UI:
+                self.logger.info("Checking encoder in FULL_UI mode")
+                value_changed, button_pressed = self.encoder.read()
+                
+                if value_changed:
+                    current_value = self.encoder.get_value()
+                    self.logger.info(f"Encoder value changed to: {current_value}")
+                    
+                    if self.selected_app:
+                        self.logger.info(f"Sending volume change for {self.selected_app}: {current_value}")
+                        if self.encoder_callback:
+                            self.encoder_callback('volume_change', self.selected_app, current_value)
+                        self.draw_volume_display(current_value)
+                    else:
+                        self.logger.info("No app selected for volume change")
+                        
+                elif button_pressed:
+                    self.logger.info("Encoder button pressed")
+                    # Handle button press if needed
+                    
+            # Handle touch updates if touch controller exists
+            if self.touch:
+                self.handle_touch()
+                
+        except Exception as e:
+            self.logger.error(f"Error in UI update: {str(e)}")
+            # Don't re-raise to keep UI running
 
     def handle_volume_update(self, app_name, volume):
         """Handle volume update from PC"""
@@ -743,18 +691,89 @@ class UIManager:
             self.apps[app_name]["volume"] = volume
             # Update encoder value if this is the selected app
             if app_name == self.selected_app:
-                self.encoder.set_value(volume)
-            # Redraw center panel if this is the selected app
-            if app_name == self.selected_app:
-                self.draw_center_panel(app_name, volume)
+                if self.encoder:
+                    current_value = self.encoder.get_value()
+                    if current_value != volume:
+                        self.encoder.set_value(volume)
+                        self.logger.info(f"Updated encoder value to {volume}")
+                # Only redraw the volume display
+                self.draw_volume_display(volume)
 
-    def handle_mute_update(self, app_name, muted):
-        """Handle mute update from PC"""
-        if app_name in self.apps:
-            self.apps[app_name]["muted"] = muted
-            # Redraw center panel if this is the selected app
-            if app_name == self.selected_app:
-                self.draw_center_panel(app_name, self.apps[app_name]["volume"])
+    def draw_volume_display(self, volume):
+        """Draw just the volume number in the center panel"""
+        if self.current_state != UIState.FULL_UI:
+            return
+            
+        panel_start_x = LEFT_PANEL_WIDTH + 1
+        text_start_x = panel_start_x + 10  # Fixed left margin
+        
+        # Calculate position for volume - MUST match the position used in draw_center_panel
+        text_height = 25  # Height of each line at scale 2
+        max_lines = 3  # Maximum app name lines
+        text_start_y = 20  # Fixed padding from top
+        volume_y = text_start_y + (max_lines * text_height) + 30  # Fixed spacing after text
+        
+        # Clear volume area with increased dimensions
+        volume_width = CENTER_PANEL_WIDTH - 20  # Full width of center panel minus margins
+        volume_height = 100  # Increased height significantly to ensure complete clearing
+        clear_y = volume_y - 20  # Start clearing even higher up
+        
+        # First clear the entire volume area
+        self.display.fill_rect(panel_start_x, clear_y, volume_width, volume_height, COLOR_BLACK)
+        
+        # Draw new volume with scale 4
+        volume_str = str(volume)
+        self.display.draw_text(text_start_x, volume_y, volume_str, COLOR_WHITE, None, scale=4)
+
+    def update_app_list(self, new_apps):
+        """Update app list with minimal screen updates"""
+        # Track removed apps
+        removed_apps = set(self.apps.keys()) - set(new_apps.keys())
+        added_apps = set(new_apps.keys()) - set(self.apps.keys())
+        
+        needs_full_redraw = len(removed_apps) > 0 or len(added_apps) > 0
+        
+        # Update app data using copy to ensure removed apps are cleared
+        self.apps = new_apps.copy()  # Use copy instead of update
+        
+        # If selected app was removed, clear selection
+        if self.selected_app in removed_apps:
+            self.selected_app = None
+        
+        if needs_full_redraw:
+            # Redraw entire UI if apps were added or removed
+            self.draw_ui()
+        else:
+            # Check if selected app was updated
+            if self.selected_app and self.selected_app in new_apps:
+                app_data = new_apps[self.selected_app]
+                # Only update center panel if selected app changed
+                self.draw_center_panel(self.selected_app, app_data.get("volume", 0))
+
+    def handle_encoder_change(self, value):
+        """Handle encoder value changes"""
+        try:
+            self.logger.info(f"Encoder change detected: {value}")
+            
+            if self.selected_app == "Master":
+                current_value = self.encoder.get_value() if self.encoder else 0
+                if value > current_value:
+                    if self.encoder_callback:
+                        self.logger.info("Sending master volume up command")
+                        self.encoder_callback('master_vol_up')
+                else:
+                    if self.encoder_callback:
+                        self.logger.info("Sending master volume down command")
+                        self.encoder_callback('master_vol_down')
+            else:
+                # Only send volume command if value actually changed
+                current_value = self.encoder.get_value() if self.encoder else 0
+                if value != current_value and self.encoder_callback:
+                    self.logger.info(f"Sending volume change command for {self.selected_app}: {value}")
+                    self.encoder_callback('volume_change', self.selected_app, value)
+                    
+        except Exception as e:
+            self.logger.error(f"Error handling encoder change: {str(e)}")
 
     def cleanup(self):
         """Cleanup UI resources"""
@@ -793,18 +812,17 @@ class UIManager:
         if len(text) > 8:
             text = text[:7] + '.'
         text_width = len(text) * 6
-        text_x = x + (ICON_SIZE - text_width) // 2
+        # Adjust text position for better centering
+        text_x = x + (ICON_SIZE - text_width) // 2 - 2  # Subtract 2 pixels for better centering
         self.display.draw_text(text_x, y + ICON_SIZE + 5, text, text_color, None)
 
-    def handle_encoder_change(self, value, direction):
-        """Handle rotary encoder changes"""
-        if self.encoder_callback:
-            if direction > 0:
-                self.encoder_callback('vol_up')
-            elif direction < 0:
-                self.encoder_callback('vol_down')
-            # Update UI if needed
-            self.draw_ui()
+    def handle_mute_update(self, app_name, muted):
+        """Handle mute update from PC"""
+        if app_name in self.apps:
+            self.apps[app_name]["muted"] = muted
+            # Redraw center panel if this is the selected app
+            if app_name == self.selected_app:
+                self.draw_center_panel(app_name, self.apps[app_name]["volume"])
 
     def clear_apps(self):
         """Clear all apps from the UI and internal state"""

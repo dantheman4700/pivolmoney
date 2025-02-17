@@ -100,6 +100,30 @@ def handle_touch(action, app_name=None):
                 ui_manager.encoder.set_value(volume)
 
 
+def handle_encoder_callback(action, *args):
+    """Handle encoder callbacks"""
+    try:
+        logger.info(f"Encoder callback: {action} {args}")
+        if action == 'volume_change' and len(args) >= 2:
+            app_name = args[0]
+            volume = args[1]
+            logger.info(f"Sending volume change: {app_name} = {volume}")
+            if usb_manager and usb_manager.is_ready():
+                usb_manager.send_volume_command(app_name, volume)
+        elif action == 'master_vol_up':
+            logger.info("Master volume up")
+            if usb_manager and usb_manager.is_ready():
+                current_vol = usb_manager.apps.get("Master", {}).get("volume", 50)
+                usb_manager.send_volume_command("Master", min(100, current_vol + 5))
+        elif action == 'master_vol_down':
+            logger.info("Master volume down")
+            if usb_manager and usb_manager.is_ready():
+                current_vol = usb_manager.apps.get("Master", {}).get("volume", 50)
+                usb_manager.send_volume_command("Master", max(0, current_vol - 5))
+    except Exception as e:
+        logger.error(f"Error in encoder callback: {str(e)}")
+
+
 def main():
     """Main application entry point"""
     global ui_manager, usb_manager
@@ -132,7 +156,7 @@ def main():
         # Set UI state to simple media controls and set up callbacks
         ui_manager.set_state(UIState.SIMPLE_MEDIA)
         ui_manager.touch_callback = handle_touch
-        ui_manager.encoder_callback = handle_media_control  # Add encoder callback
+        ui_manager.encoder_callback = handle_encoder_callback  # Updated to use new callback
 
         # Main loop
         while True:

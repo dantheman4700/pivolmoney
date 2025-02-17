@@ -8,7 +8,7 @@ from core.config import (
 
 class RotaryEncoder:
     def __init__(self, clk_pin=None, dt_pin=None, sw_pin=None, min_val=ENCODER_MIN_VAL, 
-                 max_val=ENCODER_MAX_VAL, step=ENCODER_STEP, value=0, debug=False, callback=None):
+                 max_val=ENCODER_MAX_VAL, step=ENCODER_STEP, value=0, debug=False):
         """Initialize Rotary Encoder with specified pins and range"""
         self.logger = get_logger()
         
@@ -30,76 +30,66 @@ class RotaryEncoder:
         self.step = step
         self._value = max(min_val, min(max_val, value))
         self.debug = debug
-        self.callback = callback  # Store callback function
         
+        # Initialize timing and state for simple edge detection
+        current_time = time.ticks_ms()
+        self.last_value_change = current_time  # For debouncing value changes
+        self.last_button_time = current_time     # For debouncing the button press
+        
+        # NEW: Initialize last_clk for rising edge detection
         self.last_clk = self.clk.value()
-        self.last_dt = self.dt.value()
-        self.last_sw = self.sw.value()
-        self.last_button_time = time.ticks_ms()
-        self.button_debounce = ENCODER_DEBOUNCE_MS
+        self.last_button = self.sw.value()
         
         self.logger.info(f"Rotary encoder initialized: CLK={clk_pin}, DT={dt_pin}, SW={sw_pin}")
+        # Log the initial CLK reading as a binary string (2 digits)
+        binary_str = bin(self.last_clk)[2:]
+        if len(binary_str) < 2:
+            binary_str = '0' + binary_str
+        self.logger.info(f"Initial CLK state: {binary_str}")
         
     def read(self):
-        """Read encoder state and return (value_changed, button_pressed)"""
+        """Simplified read method using rising edge detection on CLK.
+        Returns (value_changed, button_pressed)."""
         value_changed = False
         button_pressed = False
-        direction = 0  # 0 = no change, 1 = CW, -1 = CCW
         
-        try:
-            # Read current pin states
-            clk_val = self.clk.value()
-            dt_val = self.dt.value()
-            sw_val = self.sw.value()
-            
-            # Check for rotation
-            if clk_val != self.last_clk:
-                if dt_val != clk_val:  # Clockwise
-                    new_value = self._value + self.step
-                    if new_value <= self.max_val:
+        current_millis = time.ticks_ms()
+        clk_val = self.clk.value()
+        dt_val = self.dt.value()
+        sw_val = self.sw.value()
+        
+        # Simple rising edge detection on CLK: from 0 to 1
+        if self.last_clk == 0 and clk_val == 1:
+            # Check if enough time has passed to debounce the event
+            if time.ticks_diff(current_millis, self.last_value_change) > ENCODER_DEBOUNCE_MS:
+                # Determine direction based on DT pin state
+                if dt_val == 0:  # Typically means a clockwise turn
+                    new_value = min(self._value + self.step, self.max_val)
+                    if new_value != self._value:
                         self._value = new_value
                         value_changed = True
-                        direction = 1
-                        if self.debug:
-                            self.logger.debug(f"Rotary CW: {self._value}")
-                else:  # Counter-clockwise
-                    new_value = self._value - self.step
-                    if new_value >= self.min_val:
+                        self.logger.info(f"Value increased to: {self._value}")
+                else:           # Otherwise, treat as counter-clockwise
+                    new_value = max(self._value - self.step, self.min_val)
+                    if new_value != self._value:
                         self._value = new_value
                         value_changed = True
-                        direction = -1
-                        if self.debug:
-                            self.logger.debug(f"Rotary CCW: {self._value}")
-                            
-                # Call callback if value changed and callback exists
-                if value_changed and self.callback:
-                    try:
-                        self.callback(self._value, direction)
-                    except Exception as e:
-                        self.logger.error(f"Error in rotary callback: {str(e)}")
-            
-            # Check for button press with debounce
-            current_time = time.ticks_ms()
-            if sw_val != self.last_sw and time.ticks_diff(current_time, self.last_button_time) > self.button_debounce:
-                if sw_val == 0:  # Button pressed (active low)
+                        self.logger.info(f"Value decreased to: {self._value}")
+                    
+                self.last_value_change = current_millis
+        
+        # Update last_clk for next detection cycle
+        self.last_clk = clk_val
+        
+        # Button debouncing (unchanged)
+        if sw_val != self.last_button:
+            button_time_diff = time.ticks_diff(current_millis, self.last_button_time)
+            if button_time_diff > 50:
+                if not sw_val:  # Button pressed (active low)
                     button_pressed = True
-                    if self.debug:
-                        self.logger.debug("Button pressed")
-                    # Call callback for button press if it exists
-                    if self.callback:
-                        try:
-                            self.callback(self._value, 0)  # 0 indicates button press
-                        except Exception as e:
-                            self.logger.error(f"Error in button callback: {str(e)}")
-                self.last_button_time = current_time
-            
-            # Update last states
-            self.last_clk = clk_val
-            self.last_dt = dt_val
-            self.last_sw = sw_val
-            
-        except Exception as e:
-            self.logger.error(f"Error reading rotary encoder: {str(e)}")
+                    self.logger.info("Button pressed!")
+                self.last_button_time = current_millis
+            self.last_button = sw_val
         
         return value_changed, button_pressed
     

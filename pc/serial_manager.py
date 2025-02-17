@@ -17,10 +17,22 @@ MSG_VOLUME_CMD = "vcmd"  # Volume command acknowledgment
 
 class SerialManager:
     def __init__(self, port, baudrate=115200, timeout=1):
+        """Initialize serial connection with specified port"""
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self.serial = None
         self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)  # Set to DEBUG to see detailed messages
+        
+        # Add a console handler if none exists
+        if not self.logger.handlers:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+        
         self.last_heartbeat = 0
         self.heartbeat_timeout = 5.0  # 5 seconds
         try:
@@ -31,28 +43,25 @@ class SerialManager:
             self.serial = None
 
     def send_message(self, msg_type, payload=None):
-        """
-        Send a message using the lean protocol format:
-        t: message type (short string)
-        p: payload (optional data)
-        """
+        """Send a message with type and optional payload"""
         if not self.serial or not self.serial.is_open:
             self.logger.error("Cannot send message - serial port not open")
             return False
 
         try:
             message = {
-                "t": msg_type,  # Short message type
-                "p": payload if payload is not None else {}  # Optional payload
+                "t": msg_type,
+                "p": payload if payload is not None else {}
             }
             json_str = json.dumps(message)
             if not json_str.endswith('\n'):
                 json_str += '\n'
+            self.logger.debug(f"Sending message: {json_str.strip()}")  # Log the message being sent
             self.serial.write(json_str.encode())
-            self.logger.debug(f"Sent {msg_type}: {json_str.strip()}")
+            self.serial.flush()  # Ensure the message is sent immediately
             return True
         except Exception as e:
-            self.logger.error(f"Error sending message: {str(e)}")
+            self.logger.error(f"Failed to send message: {str(e)}")
             return False
 
     def read_message(self):

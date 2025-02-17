@@ -65,22 +65,22 @@ class IconHandler:
         # Get icon if we found any windows
         icon_data = None
         if windows:
-            print(f"Found {len(windows)} windows for {process_name}")
+            print(f"Found {len(windows)} windows for {process_name}", flush=True)
             visible_windows = [w for w in windows if w[2]]  # Get visible windows
             windows_to_try = visible_windows if visible_windows else windows
             
             for hwnd, title, is_visible in windows_to_try:
-                print(f"Trying to get icon for window: {title} (Visible: {is_visible})")
+                print(f"Trying to get icon for window: {title} (Visible: {is_visible})", flush=True)
                 icon_data = self.get_window_icon(hwnd)
                 if icon_data:
-                    print(f"Successfully got icon for {title}")
+                    print(f"Successfully got icon for {title}", flush=True)
                     break
         else:
-            print(f"No windows found for {process_name}")
+            print(f"No windows found for {process_name}", flush=True)
         
         # If no icon found, use default
         if not icon_data:
-            print(f"Using default icon for {process_name}")
+            print(f"Using default icon for {process_name}", flush=True)
             icon_data = self.get_default_icon()
             
         # Cache the icon
@@ -93,11 +93,11 @@ class IconHandler:
         """Get window icon in RGB565 format"""
         try:
             if not win32gui.IsWindow(hwnd):
-                print(f"Invalid window handle: {hwnd}")
+                print(f"Invalid window handle: {hwnd}", flush=True)
                 return None
             
             window_text = win32gui.GetWindowText(hwnd)
-            print(f"Attempting to get icon for window: {window_text} (handle: {hwnd})")
+            print(f"Attempting to get icon for window: {window_text} (handle: {hwnd})", flush=True)
             
             # Try to get icon from window class first
             hicon = win32gui.SendMessage(hwnd, win32con.WM_GETICON, win32con.ICON_BIG, 0)
@@ -111,7 +111,7 @@ class IconHandler:
                 hicon = win32gui.GetClassLong(hwnd, win32con.GCL_HICONSM)
             
             if hicon:
-                print(f"Got icon handle for {window_text}")
+                print(f"Got icon handle for {window_text}", flush=True)
                 try:
                     # Get screen DC
                     hdc = win32gui.GetDC(0)
@@ -182,18 +182,18 @@ class IconHandler:
                     win32gui.ReleaseDC(0, hdc)
                     win32gui.DestroyIcon(hicon)
                     
-                    print(f"Successfully extracted icon for window {window_text}")
+                    print(f"Successfully extracted icon for window {window_text}", flush=True)
                     return rgb565_data
                     
                 except Exception as e:
-                    print(f"Error converting icon to image for {window_text}: {e}")
+                    print(f"Error converting icon to image for {window_text}: {e}", flush=True)
                     return None
             
             else:
-                print(f"No icon found for window {window_text}")
+                print(f"No icon found for window {window_text}", flush=True)
             
         except Exception as e:
-            print(f"Error getting icon for window {hwnd}: {str(e)}")
+            print(f"Error getting icon for window {hwnd}: {str(e)}", flush=True)
             return None
             
     def get_default_icon(self):
@@ -221,9 +221,9 @@ class IconHandler:
                     rgb565_data[idx] = (rgb565 >> 8) & 0xFF
                     rgb565_data[idx + 1] = rgb565 & 0xFF
                     
-            print("Generated default icon successfully")
+            print("Generated default icon successfully", flush=True)
             return rgb565_data
             
         except Exception as e:
-            print(f"Error creating default icon: {str(e)}")
+            print(f"Error creating default icon: {str(e)}", flush=True)
             return None

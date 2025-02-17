@@ -29,6 +29,10 @@ class VolumeMonitor:
         
     def find_pico_com_port(self):
         """Find the COM port for the Pico device"""
+        # Don't search if already connected
+        if self.connected and self.initialized and self.serial_manager:
+            return True
+            
         ports = list(serial.tools.list_ports.comports())
         pico_ports = []
         
@@ -55,6 +59,10 @@ class VolumeMonitor:
     def try_connect(self):
         """Try to connect and establish handshake"""
         try:
+            # Don't attempt to connect if already connected
+            if self.connected and self.initialized:
+                return True
+                
             # Send connection message
             if self.serial_manager.send_message(MSG_CONNECT):
                 # Wait for acknowledgment and initial config request
@@ -65,6 +73,7 @@ class VolumeMonitor:
                         self.connected = True
                         self.last_heartbeat = time.time()
                         print("Received connection acknowledgment")
+                        
                     elif msg_type == MSG_INITIAL_CONFIG and self.connected:
                         print("Received initial config request")
                         # Send initial configuration
@@ -74,9 +83,12 @@ class VolumeMonitor:
                             return True
                     time.sleep(0.1)
             
-            print("Connection attempt failed")
-            self.disconnect()
-            return False
+            if not self.initialized:
+                print("Connection attempt failed")
+                self.disconnect()
+                return False
+            
+            return self.initialized
             
         except Exception as e:
             print(f"Connection error: {e}")
@@ -138,7 +150,7 @@ class VolumeMonitor:
                 
                 if success:
                     self.last_state_update = current_time
-                    self.last_app_list = lean_apps
+                    self.last_app_list = lean_apps.copy()  # Use copy to avoid reference issues
                 
                 return success
             
@@ -172,22 +184,45 @@ class VolumeMonitor:
                 # Respond to heartbeat for bi-directional monitoring
                 self.serial_manager.send_heartbeat()
                 
+            elif msg_type == "vol":  # Volume command from Pico
+                app_name = payload.get("app")
+                volume = payload.get("v")
+                print(f"Received volume command: {app_name} = {volume}")  # Debug print
+                if app_name and volume is not None:
+                    success = False
+                    if app_name == "Master":
+                        print(f"Setting master volume to {volume}")  # Debug print
+                        success = self.set_master_volume(volume)
+                    else:
+                        print(f"Setting {app_name} volume to {volume}")  # Debug print
+                        success = self.set_app_volume(app_name, volume)
+                    
+                    if success:
+                        print(f"Successfully set volume for {app_name}")  # Debug print
+                        # Send volume command acknowledgment
+                        self.serial_manager.send_volume_ack(app_name, volume)
+                        
+                        # Get current app volumes and send update
+                        app_volumes, _ = self.get_application_volumes()
+                        self.send_app_update(app_volumes)
+                    else:
+                        print(f"Failed to set volume for {app_name}")
+                else:
+                    print(f"Invalid volume command: {payload}")  # Debug print
+
         except Exception as e:
             print(f"Error handling message: {e}")
             
     def update(self):
         """Main update loop with lean protocol"""
-        if not self.connected:
-            if not self.connect():
-                time.sleep(1)
-                return
-                
         try:
-            # Check connection health
+            # Check connection health first
             if not self.serial_manager or not self.serial_manager.check_connection():
-                print("Connection lost - disconnecting")
+                print("Connection lost or not established")
                 self.disconnect()
-                return
+                if not self.connect():
+                    time.sleep(1)
+                    return
                 
             # Check for incoming messages
             msg_type, payload = self.serial_manager.read_message()
@@ -198,53 +233,19 @@ class VolumeMonitor:
             
             # Send heartbeat
             if current_time - self.last_heartbeat >= self.heartbeat_interval:
-                if not self.serial_manager:
-                    self.disconnect()
-                    return
-                if self.serial_manager.send_heartbeat():
-                    self.last_heartbeat = current_time
-                    print("Heartbeat sent successfully")
-                else:
+                if not self.serial_manager.send_heartbeat():
                     print("Failed to send heartbeat")
                     self.disconnect()
                     return
+                self.last_heartbeat = current_time
                     
             # Check for app changes
             if current_time - self.last_update >= self.update_interval:
                 app_volumes, icons = self.get_application_volumes()
                 
-                # Convert to dict for easier comparison
-                current_apps = {app["name"]: app for app in app_volumes}
-                
-                # Check for any changes in volume or mute state only
-                # Ignore icon state changes to prevent icon request loops
-                has_changes = False
-                if len(current_apps) != len(self.last_app_list):
-                    has_changes = True
-                else:
-                    for app_name, app_data in current_apps.items():
-                        if app_name not in self.last_app_list:
-                            has_changes = True
-                            break
-                        last_app = self.last_app_list.get(app_name, {})
-                        if (app_data["volume"] != last_app.get("volume") or 
-                            app_data["muted"] != last_app.get("muted")):
-                            has_changes = True
-                            break
-                
-                if has_changes:
-                    if not self.serial_manager:
-                        self.disconnect()
-                        return
-                    if self.send_app_update(app_volumes):
-                        self.last_app_list = current_apps
-                        print("App update sent successfully")
-                    else:
-                        print("Failed to send app update")
-                        self.disconnect()
-                        return
-                        
-                self.last_update = current_time
+                # Send update if needed
+                if self.send_app_update(app_volumes):
+                    self.last_update = current_time
                 
             time.sleep(0.01)
             
@@ -258,6 +259,15 @@ class VolumeMonitor:
         app_volumes = []
         icons_to_send = []
         seen_apps = set()
+        
+        # Add master volume first
+        master_vol = self.get_master_volume()
+        app_volumes.append({
+            "name": "Master",
+            "volume": master_vol,
+            "muted": False,
+            "has_icon": False
+        })
         
         for session in sessions:
             try:
@@ -292,8 +302,73 @@ class VolumeMonitor:
 
     def connect(self):
         """Connect to the Pico device"""
+        # Don't attempt to connect if already connected and initialized
+        if self.connected and self.initialized and self.serial_manager:
+            return True
+            
         print("Attempting to connect...")
         return self.find_pico_com_port()
+
+    def set_master_volume(self, volume_percent):
+        """Set Windows master volume"""
+        try:
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            
+            # Convert percentage to scalar
+            volume_scalar = max(0.0, min(1.0, volume_percent / 100.0))
+            volume.SetMasterVolumeLevelScalar(volume_scalar, None)
+            return True
+        except Exception as e:
+            print(f"Error setting master volume: {e}")
+            return False
+
+    def set_app_volume(self, app_name, volume_percent):
+        """Set volume for a specific app"""
+        try:
+            sessions = AudioUtilities.GetAllSessions()
+            for session in sessions:
+                if session.Process and session.Process.name() == app_name:
+                    volume_interface = session.SimpleAudioVolume
+                    # Convert percentage to scalar
+                    volume_scalar = max(0.0, min(1.0, volume_percent / 100.0))
+                    volume_interface.SetMasterVolume(volume_scalar, None)
+                    return True
+            return False
+        except Exception as e:
+            print(f"Error setting app volume: {e}")
+            return False
+
+    def get_master_volume(self):
+        """Get Windows master volume"""
+        try:
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            
+            # Convert from scalar to percentage
+            current_vol = volume.GetMasterVolumeLevelScalar()
+            return int(current_vol * 100)
+        except Exception as e:
+            print(f"Error getting master volume: {e}")
+            return 0
+
+    def update_master_volume(self):
+        """Update master volume in app list and send update"""
+        master_vol = self.get_master_volume()
+        app_volumes, _ = self.get_application_volumes()
+        
+        # Send update
+        self.send_app_update("Master")
 
 def main():
     monitor = VolumeMonitor()

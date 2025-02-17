@@ -401,35 +401,65 @@ class USBManager:
             if not is_initial:
                 # Track removed apps to clean cache
                 removed_apps = set(self.apps.keys()) - set(new_apps.keys())
+                added_apps = set(new_apps.keys()) - set(self.apps.keys())
+                
+                # Clean up removed apps
                 for app_name in removed_apps:
                     if app_name in self.icon_cache:
                         del self.icon_cache[app_name]
                         self.icon_cache_order.remove(app_name)
                         self.logger.info(f"Removed {app_name} icon from cache (app removed)")
-            
-            # Update apps while preserving icon state
-            for app_name, app_data in new_apps.items():
-                if app_name in self.apps:
-                    # Preserve icon data for existing apps
-                    new_apps[app_name]["icon"] = self.apps[app_name].get("icon")
-            
-            # Update apps dictionary
-            self.apps.update(new_apps)
-            
-            # Track which icons we need
-            for app_name, app_data in new_apps.items():
-                if app_data.get("i", False) and app_name not in self.icon_cache:
-                    if app_name not in self.pending_icons:
+                    # Also remove from apps dictionary
+                    if app_name in self.apps:
+                        del self.apps[app_name]
+                        self.logger.info(f"Removed {app_name} from apps list")
+                        # If this was the selected app, clear selection
+                        if self.ui_manager and self.ui_manager.selected_app == app_name:
+                            self.ui_manager.selected_app = None
+                
+                # Update apps while preserving icon state
+                for app_name, app_data in new_apps.items():
+                    if app_name in self.apps:
+                        # Preserve icon data for existing apps
+                        new_apps[app_name]["icon"] = self.apps[app_name].get("icon")
+                
+                # Update apps dictionary with new data
+                self.apps = new_apps.copy()  # Replace entire dictionary instead of updating
+                
+                # Request icons for new apps
+                for app_name in added_apps:
+                    if app_name != "Master" and new_apps[app_name].get("i", False):
                         self.pending_icons.add(app_name)
                         self.request_icon(app_name)
-            
-            if is_initial:
+                
+                # Update UI if needed
+                if self.ui_manager:
+                    if removed_apps or added_apps:
+                        # Full redraw needed for app list changes
+                        self.ui_manager.update_app_list(self.apps)
+                    else:
+                        # Check if the update affects the selected app
+                        selected_app = self.ui_manager.selected_app
+                        if selected_app in new_apps:
+                            # Only update volume display for selected app
+                            self.ui_manager.handle_volume_update(
+                                selected_app,
+                                new_apps[selected_app].get("v", 0)  # Use 'v' key for volume
+                            )
+            else:
+                # Initial config - full update
+                self.apps = new_apps.copy()  # Use copy to avoid reference issues
                 self.initial_config_received = True
+                
+                # Request icons for all apps that need them
+                for app_name, app_data in new_apps.items():
+                    if app_name != "Master" and app_data.get("i", False):
+                        self.pending_icons.add(app_name)
+                        self.request_icon(app_name)
+                
+                # Check UI state after update
+                self._check_ui_state()
             
-            # Check UI state after update
-            self._check_ui_state()
-            
-            self.logger.info(f"Updated apps: {list(self.apps.keys())}")
             gc.collect()  # Clean up after updates
             
         except Exception as e:
@@ -493,3 +523,20 @@ class USBManager:
             # On error, stay in SIMPLE_MEDIA mode
             if self.ui_manager:
                 self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
+
+    def send_volume_command(self, app_name, volume):
+        """Send volume command to PC"""
+        try:
+            self.logger.info(f"Sending volume command: {app_name} = {volume}")
+            success = self.send_message('vol', {
+                'app': app_name,
+                'v': int(volume)  # Ensure volume is an integer
+            })
+            if success:
+                self.logger.info("Volume command sent successfully")
+            else:
+                self.logger.error("Failed to send volume command")
+            return success
+        except Exception as e:
+            self.logger.error(f"Error sending volume command: {str(e)}")
+            return False
