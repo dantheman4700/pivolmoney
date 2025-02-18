@@ -331,8 +331,8 @@ class USBManager:
                 
             elif msg_type == MSG_VOLUME_CMD:
                 # Handle volume command acknowledgment
-                if self.ui_manager and "app" in payload and "v" in payload:
-                    self.ui_manager.handle_volume_update(payload["app"], payload["v"])
+                if self.ui_manager and "app" in payload and "d" in payload:
+                    self.ui_manager.handle_volume_update(payload["app"], payload["d"])
                 
         except Exception as e:
             self.logger.error(f"Message handling error: {str(e)}")
@@ -524,13 +524,14 @@ class USBManager:
             if self.ui_manager:
                 self.ui_manager.set_state(UIState.SIMPLE_MEDIA)
 
-    def send_volume_command(self, app_name, volume):
-        """Send volume command to PC"""
+    def send_volume_command(self, app_name, direction):
+        """Send volume up/down command to PC
+        direction: 1 for up, 0 for down"""
         try:
-            self.logger.info(f"Sending volume command: {app_name} = {volume}")
+            self.logger.info(f"Sending volume {direction and 'up' or 'down'} command for {app_name}")
             success = self.send_message('vol', {
                 'app': app_name,
-                'v': int(volume)  # Ensure volume is an integer
+                'd': direction  # 'd' for direction: 1=up, 0=down
             })
             if success:
                 self.logger.info("Volume command sent successfully")

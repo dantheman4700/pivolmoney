@@ -106,20 +106,27 @@ def handle_encoder_callback(action, *args):
         logger.info(f"Encoder callback: {action} {args}")
         if action == 'volume_change' and len(args) >= 2:
             app_name = args[0]
-            volume = args[1]
-            logger.info(f"Sending volume change: {app_name} = {volume}")
+            new_value = args[1]
+            old_value = usb_manager.apps.get(app_name, {}).get("volume", 0) if usb_manager else 0
+            
+            # Determine if volume is going up or down
+            # Compare the new encoder value with the old value
+            direction = 1 if new_value > old_value else 0
+            logger.info(f"Volume change detected: old={old_value}, new={new_value}, direction={direction}")
+            
             if usb_manager and usb_manager.is_ready():
-                usb_manager.send_volume_command(app_name, volume)
+                usb_manager.send_volume_command(app_name, direction)
+                
         elif action == 'master_vol_up':
             logger.info("Master volume up")
             if usb_manager and usb_manager.is_ready():
-                current_vol = usb_manager.apps.get("Master", {}).get("volume", 50)
-                usb_manager.send_volume_command("Master", min(100, current_vol + 5))
+                usb_manager.send_volume_command("Master", 1)  # 1 for up
+                
         elif action == 'master_vol_down':
             logger.info("Master volume down")
             if usb_manager and usb_manager.is_ready():
-                current_vol = usb_manager.apps.get("Master", {}).get("volume", 50)
-                usb_manager.send_volume_command("Master", max(0, current_vol - 5))
+                usb_manager.send_volume_command("Master", 0)  # 0 for down
+                
     except Exception as e:
         logger.error(f"Error in encoder callback: {str(e)}")
 

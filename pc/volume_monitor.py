@@ -186,29 +186,48 @@ class VolumeMonitor:
                 
             elif msg_type == "vol":  # Volume command from Pico
                 app_name = payload.get("app")
-                volume = payload.get("v")
-                print(f"Received volume command: {app_name} = {volume}")  # Debug print
-                if app_name and volume is not None:
+                direction = payload.get("d")  # 1 for up, 0 for down
+                print(f"Received volume {direction and 'up' or 'down'} command for {app_name}")  # Debug print
+                
+                if app_name and direction is not None:
                     success = False
-                    if app_name == "Master":
-                        print(f"Setting master volume to {volume}")  # Debug print
-                        success = self.set_master_volume(volume)
-                    else:
-                        print(f"Setting {app_name} volume to {volume}")  # Debug print
-                        success = self.set_app_volume(app_name, volume)
+                    current_volume = None
                     
-                    if success:
-                        print(f"Successfully set volume for {app_name}")  # Debug print
-                        # Send volume command acknowledgment
-                        self.serial_manager.send_volume_ack(app_name, volume)
-                        
-                        # Get current app volumes and send update
-                        app_volumes, _ = self.get_application_volumes()
-                        self.send_app_update(app_volumes)
+                    if app_name == "Master":
+                        current_volume = self.get_master_volume()
                     else:
-                        print(f"Failed to set volume for {app_name}")
-                else:
-                    print(f"Invalid volume command: {payload}")  # Debug print
+                        # Use the same method as get_application_volumes
+                        sessions = AudioUtilities.GetAllSessions()
+                        seen_apps = set()  # Track seen apps to handle duplicates
+                        for session in sessions:
+                            if session.Process and session.Process.name() == app_name:
+                                volume_interface = session.SimpleAudioVolume
+                                current_volume = int(volume_interface.GetMasterVolume() * 100)
+                                break
+                    
+                    # Only proceed if we got a valid volume
+                    if current_volume is not None:
+                        # Adjust volume by 2% up or down
+                        new_volume = max(0, min(100, current_volume + (2 if direction else -2)))
+                        print(f"Adjusting {app_name} volume from {current_volume} to {new_volume}")  # Debug print
+                        
+                        if app_name == "Master":
+                            success = self.set_master_volume(new_volume)
+                        else:
+                            success = self.set_app_volume(app_name, new_volume)
+                        
+                        if success:
+                            print(f"Successfully adjusted volume for {app_name}")  # Debug print
+                            # Send volume command acknowledgment with new volume
+                            self.serial_manager.send_volume_ack(app_name, new_volume)
+                            
+                            # Get current app volumes and send update
+                            app_volumes, _ = self.get_application_volumes()
+                            self.send_app_update(app_volumes)
+                        else:
+                            print(f"Failed to adjust volume for {app_name}")  # Debug print
+                    else:
+                        print(f"Could not get current volume for {app_name}")  # Debug print
 
         except Exception as e:
             print(f"Error handling message: {e}")
@@ -331,15 +350,35 @@ class VolumeMonitor:
     def set_app_volume(self, app_name, volume_percent):
         """Set volume for a specific app"""
         try:
+            print(f"Setting {app_name} volume to {volume_percent}%")  # Debug log
             sessions = AudioUtilities.GetAllSessions()
+            found = False
             for session in sessions:
                 if session.Process and session.Process.name() == app_name:
                     volume_interface = session.SimpleAudioVolume
-                    # Convert percentage to scalar
-                    volume_scalar = max(0.0, min(1.0, volume_percent / 100.0))
+                    # Get current volume before change
+                    current_vol = int(volume_interface.GetMasterVolume() * 100)
+                    print(f"Current volume before change: {current_vol}%")  # Debug log
+                    
+                    # Convert percentage to scalar (ensure proper conversion)
+                    volume_scalar = max(0.0, min(1.0, float(volume_percent) / 100.0))
+                    print(f"Setting volume scalar to: {volume_scalar}")  # Debug log
+                    
+                    # Set the volume
                     volume_interface.SetMasterVolume(volume_scalar, None)
-                    return True
-            return False
+                    
+                    # Verify the change
+                    new_vol = int(volume_interface.GetMasterVolume() * 100)
+                    print(f"Volume after change: {new_vol}%")  # Debug log
+                    
+                    found = True
+                    break
+            
+            if not found:
+                print(f"No audio session found for {app_name}")
+                return False
+                
+            return True
         except Exception as e:
             print(f"Error setting app volume: {e}")
             return False
