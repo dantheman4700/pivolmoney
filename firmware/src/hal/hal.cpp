@@ -15,7 +15,7 @@ TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t buf1[DRAW_BUF_SIZE];
 
-// Display Flush Callback
+    // Display Flush Callback
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
@@ -73,7 +73,7 @@ volatile int32_t encoder_count = 0;
 volatile bool encoder_btn_pressed = false;
 
 void isr_encoder_clk() {
-    if (digitalRead(20) == digitalRead(21)) {
+    if (digitalRead(ROT_CLK) == digitalRead(ROT_DT)) {
         encoder_count++;
     } else {
         encoder_count--;
@@ -81,7 +81,7 @@ void isr_encoder_clk() {
 }
 
 void isr_encoder_btn() {
-    encoder_btn_pressed = !digitalRead(22); // Active Low
+    encoder_btn_pressed = !digitalRead(ROT_SW); // Active Low
 }
 
 // Encoder Read Callback
@@ -99,11 +99,16 @@ void my_encoder_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
 void hal_setup() {
     // Serial
     Serial.begin(115200);
+    pinMode(LED_BUILTIN, OUTPUT);
     
     // Display
     tft.init();
-    tft.setRotation(0);
+    tft.setRotation(1); // Landscape
     tft.fillScreen(TFT_BLACK);
+    
+    // Ensure Backlight is on
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, HIGH);
 
     // Touch
 #ifdef ARDUINO_ARCH_ESP32
@@ -136,12 +141,12 @@ void hal_setup() {
     lv_indev_drv_register(&indev_touch);
 
     // Rotary Encoder
-    pinMode(20, INPUT_PULLUP); // CLK
-    pinMode(21, INPUT_PULLUP); // DT
-    pinMode(22, INPUT_PULLUP); // SW
+    pinMode(ROT_CLK, INPUT_PULLUP); // CLK
+    pinMode(ROT_DT, INPUT_PULLUP); // DT
+    pinMode(ROT_SW, INPUT_PULLUP); // SW
     
-    attachInterrupt(digitalPinToInterrupt(20), isr_encoder_clk, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(22), isr_encoder_btn, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ROT_CLK), isr_encoder_clk, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ROT_SW), isr_encoder_btn, CHANGE);
 
     // Initialize Input Device (Encoder)
     static lv_indev_drv_t indev_enc;
@@ -160,4 +165,11 @@ void hal_setup() {
 
 void hal_loop() {
     lv_timer_handler();
+    
+    // Heartbeat
+    static uint32_t last_blink = 0;
+    if (millis() - last_blink > 1000) {
+        last_blink = millis();
+        digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    }
 }
