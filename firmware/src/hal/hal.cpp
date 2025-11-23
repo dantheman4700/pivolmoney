@@ -1,40 +1,70 @@
 #include "hal.h"
 #include <TFT_eSPI.h>
 #include <Wire.h>
-#include <FT6236.h>
 
 // Hardware Instances
 TFT_eSPI tft = TFT_eSPI();
-FT6236 ts = FT6236();
+
+// FT6236 Constants
+#define FT6236_ADDR 0x38
+#define FT6236_REG_NUM_TOUCHES 0x02
+#define FT6236_REG_P1_XH 0x03
 
 // Buffers
-#define DRAW_BUF_SIZE (SCREEN_WIDTH * SCREEN_HEIGHT / 10 * (LV_COLOR_DEPTH / 8))
-uint8_t draw_buf[DRAW_BUF_SIZE];
+#define DRAW_BUF_SIZE (SCREEN_WIDTH * SCREEN_HEIGHT / 10)
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t buf1[DRAW_BUF_SIZE];
 
 // Display Flush Callback
-void my_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map) {
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
 
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
-    tft.pushColors((uint16_t *)px_map, w * h, true);
+    tft.pushColors((uint16_t *)&color_p->full, w * h, true);
     tft.endWrite();
 
-    lv_display_flush_ready(disp);
+    lv_disp_flush_ready(disp);
+}
+
+// Manual FT6236 Read
+bool ft6236_read(int16_t *x, int16_t *y) {
+    Wire.beginTransmission(FT6236_ADDR);
+    Wire.write(FT6236_REG_NUM_TOUCHES);
+    if (Wire.endTransmission() != 0) return false;
+
+    if (Wire.requestFrom(FT6236_ADDR, 1) != 1) return false;
+    uint8_t touches = Wire.read();
+
+    if (touches > 0 && touches <= 2) {
+        Wire.beginTransmission(FT6236_ADDR);
+        Wire.write(FT6236_REG_P1_XH);
+        Wire.endTransmission();
+        
+        if (Wire.requestFrom(FT6236_ADDR, 4) == 4) {
+            uint8_t xh = Wire.read();
+            uint8_t xl = Wire.read();
+            uint8_t yh = Wire.read();
+            uint8_t yl = Wire.read();
+            
+            *x = ((xh & 0x0F) << 8) | xl;
+            *y = ((yh & 0x0F) << 8) | yl;
+            return true;
+        }
+    }
+    return false;
 }
 
 // Touch Read Callback
-void my_touch_read(lv_indev_t * indev, lv_indev_data_t * data) {
-    if (ts.touched()) {
-        TS_Point p = ts.getPoint();
-        data->state = LV_INDEV_STATE_PRESSED;
-        // Map coordinates if needed (ILI9488 usually needs mapping depending on rotation)
-        // For now assume 1:1 mapping with rotation 0
-        data->point.x = p.x;
-        data->point.y = p.y;
+void my_touch_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
+    int16_t x, y;
+    if (ft6236_read(&x, &y)) {
+        data->state = LV_INDEV_STATE_PR;
+        data->point.x = x;
+        data->point.y = y;
     } else {
-        data->state = LV_INDEV_STATE_RELEASED;
+        data->state = LV_INDEV_STATE_REL;
     }
 }
 
@@ -55,14 +85,14 @@ void isr_encoder_btn() {
 }
 
 // Encoder Read Callback
-void my_encoder_read(lv_indev_t * indev, lv_indev_data_t * data) {
+void my_encoder_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
     data->enc_diff = encoder_count;
     encoder_count = 0;
 
     if (encoder_btn_pressed) {
-        data->state = LV_INDEV_STATE_PRESSED;
+        data->state = LV_INDEV_STATE_PR;
     } else {
-        data->state = LV_INDEV_STATE_RELEASED;
+        data->state = LV_INDEV_STATE_REL;
     }
 }
 
@@ -76,25 +106,34 @@ void hal_setup() {
     tft.fillScreen(TFT_BLACK);
 
     // Touch
-    Wire.setSDA(0);
-    Wire.setSCL(1);
+#ifdef ARDUINO_ARCH_ESP32
+    Wire.begin(TOUCH_SDA, TOUCH_SCL);
+#else
+    Wire.setSDA(TOUCH_SDA);
+    Wire.setSCL(TOUCH_SCL);
     Wire.begin();
-    if (!ts.begin(40)) {
-         Serial.println("Touch init failed!");
-    }
-
+#endif
+    
     // LVGL
     lv_init();
 
-    // Create Display
-    lv_display_t * disp = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
-    lv_display_set_flush_cb(disp, my_disp_flush);
-    lv_display_set_buffers(disp, draw_buf, NULL, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    // Initialize Display Driver
+    lv_disp_draw_buf_init(&draw_buf, buf1, NULL, DRAW_BUF_SIZE);
 
-    // Create Input Device (Touch)
-    lv_indev_t * indev_touch = lv_indev_create();
-    lv_indev_set_type(indev_touch, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev_touch, my_touch_read);
+    static lv_disp_drv_t disp_drv;
+    lv_disp_drv_init(&disp_drv);
+    disp_drv.hor_res = SCREEN_WIDTH;
+    disp_drv.ver_res = SCREEN_HEIGHT;
+    disp_drv.flush_cb = my_disp_flush;
+    disp_drv.draw_buf = &draw_buf;
+    lv_disp_drv_register(&disp_drv);
+
+    // Initialize Input Device (Touch)
+    static lv_indev_drv_t indev_touch;
+    lv_indev_drv_init(&indev_touch);
+    indev_touch.type = LV_INDEV_TYPE_POINTER;
+    indev_touch.read_cb = my_touch_read;
+    lv_indev_drv_register(&indev_touch);
 
     // Rotary Encoder
     pinMode(20, INPUT_PULLUP); // CLK
@@ -104,15 +143,17 @@ void hal_setup() {
     attachInterrupt(digitalPinToInterrupt(20), isr_encoder_clk, CHANGE);
     attachInterrupt(digitalPinToInterrupt(22), isr_encoder_btn, CHANGE);
 
-    // Create Input Device (Encoder)
-    lv_indev_t * indev_enc = lv_indev_create();
-    lv_indev_set_type(indev_enc, LV_INDEV_TYPE_ENCODER);
-    lv_indev_set_read_cb(indev_enc, my_encoder_read);
+    // Initialize Input Device (Encoder)
+    static lv_indev_drv_t indev_enc;
+    lv_indev_drv_init(&indev_enc);
+    indev_enc.type = LV_INDEV_TYPE_ENCODER;
+    indev_enc.read_cb = my_encoder_read;
+    lv_indev_t * enc_dev = lv_indev_drv_register(&indev_enc);
     
     // Create a group for the encoder
     lv_group_t * g = lv_group_create();
     lv_group_set_default(g);
-    lv_indev_set_group(indev_enc, g);
+    lv_indev_set_group(enc_dev, g);
     
     Serial.println("HAL Initialized");
 }

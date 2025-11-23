@@ -8,5 +8,5 @@ void ui_init() {
     ui_create_volume_screen();
 
     // Load initial screen
-    lv_screen_load(ui_get_media_screen());
+    lv_scr_load(ui_get_media_screen());
 }
