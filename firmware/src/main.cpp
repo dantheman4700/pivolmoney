@@ -13,6 +13,7 @@ static lv_color_t buf[SCREEN_WIDTH * 10];
 // --- Touch (Raw I2C - FT6336) ---
 #define TOUCH_ADDR 0x38
 static lv_indev_drv_t indev_drv;
+static lv_indev_t* touch_indev = NULL;
 
 bool readTouch(int* x, int* y) {
     Wire.beginTransmission(TOUCH_ADDR);
@@ -56,12 +57,6 @@ void touch_read_cb(lv_indev_drv_t* drv, lv_indev_data_t* data) {
         data->point.x = x;
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
-        
-        static uint32_t lastPrint = 0;
-        if (millis() - lastPrint > 200) {
-            Serial.printf("TOUCH: x=%d, y=%d\n", x, y);
-            lastPrint = millis();
-        }
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
@@ -378,7 +373,13 @@ void setup() {
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = touch_read_cb;
-    lv_indev_drv_register(&indev_drv);
+    touch_indev = lv_indev_drv_register(&indev_drv);
+    
+    if (touch_indev) {
+        Serial.println("Touch input registered OK");
+    } else {
+        Serial.println("Touch input registration FAILED!");
+    }
 
     createUI();
     lv_refr_now(NULL);
@@ -386,35 +387,13 @@ void setup() {
 }
 
 void loop() {
+    // LVGL tick - required for LVGL to poll input devices!
+    static uint32_t lastTick = 0;
+    uint32_t now = millis();
+    lv_tick_inc(now - lastTick);
+    lastTick = now;
+    
     lv_timer_handler();
-    
-    // Direct touch polling for app selection
-    static uint32_t lastTouchPoll = 0;
-    static bool wasTouching = false;
-    
-    if (millis() - lastTouchPoll > 50) {  // Poll every 50ms
-        int tx, ty;
-        bool isTouching = readTouch(&tx, &ty);
-        
-        // On touch start (not held)
-        if (isTouching && !wasTouching) {
-            Serial.printf("TOUCH: %d,%d\n", tx, ty);
-            
-            // Check if touch is in app list area (left side, x < 230)
-            if (tx < 230 && ty > 30 && ty < 300 && appCount > 0) {
-                // App list starts at y~40, each row is ~37px (32px button + 5px gap)
-                int row = (ty - 40) / 37;
-                if (row >= 0 && row < appCount) {
-                    selectedApp = row;
-                    Serial.printf("Selected app %d: %s\n", selectedApp, apps[selectedApp].name);
-                    updateAppListUI();
-                }
-            }
-        }
-        
-        wasTouching = isTouching;
-        lastTouchPoll = millis();
-    }
     
     // Heartbeat
     static uint32_t lastHeartbeat = 0;
