@@ -103,8 +103,13 @@ class SerialManager:
                 if line:
                     self._tap("RX", line)
                     
+                    # Update heartbeat for ANY message received
+                    self.last_heartbeat = time.time()
+                    
                     if line == "ACK":
                         return "ack", {}
+                    elif line == "HB":
+                        return "hb", {}  # Heartbeat - just update timestamp
                         
                     return "unknown", {"raw": line}
             return None, None
