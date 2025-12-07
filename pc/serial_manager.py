@@ -93,7 +93,7 @@ class SerialManager:
             return False
 
     def read_message(self):
-        """Read a line (ACK or other)"""
+        """Read a line (ACK, HB, VOL command, or other)"""
         if not self.serial or not self.serial.is_open:
             return None, None
 
@@ -109,7 +109,15 @@ class SerialManager:
                     if line == "ACK":
                         return "ack", {}
                     elif line == "HB":
-                        return "hb", {}  # Heartbeat - just update timestamp
+                        return "hb", {}
+                    elif line.startswith("VOL|"):
+                        # Volume command: VOL|AppName:Volume
+                        try:
+                            payload = line[4:]  # Skip "VOL|"
+                            name, vol = payload.split(":")
+                            return "vol", {"app": name, "v": int(vol)}
+                        except:
+                            return "unknown", {"raw": line}
                         
                     return "unknown", {"raw": line}
             return None, None
