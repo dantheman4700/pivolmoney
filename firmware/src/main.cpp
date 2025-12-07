@@ -239,14 +239,15 @@ void parseUpdate(const char* payload) {
                 if (colon) {
                     *colon = '\0';
                     
-                    // Clear previous icon for this slot!
-                    apps[appCount].hasIcon = false;
-                    memset(apps[appCount].iconData, 0, sizeof(apps[appCount].iconData));
+                    // Check if app name changed for this slot
+                    if (strncmp(apps[appCount].name, token, 23) != 0) {
+                        apps[appCount].hasIcon = false;
+                        memset(apps[appCount].iconData, 0, sizeof(apps[appCount].iconData));
+                        strncpy(apps[appCount].name, token, 23);
+                        apps[appCount].name[23] = '\0';
+                    }
                     
-                    strncpy(apps[appCount].name, token, 23);
-                    apps[appCount].name[23] = '\0';
                     apps[appCount].volume = atoi(colon + 1);
-                    // Serial.printf("Slot %d: %s (Icon cleared)\n", appCount, apps[appCount].name); 
                     appCount++;
                 }
             }
