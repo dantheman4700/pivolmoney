@@ -70,7 +70,7 @@ class VolumeMonitor:
             
             for port in esp32_ports:
                 print(f"Attempting connection on {port}")
-                self.serial_manager = SerialManager(port, baudrate=115200, tap=self.serial_tap)
+                self.serial_manager = SerialManager(port, baudrate=921600, tap=self.serial_tap)
                 # Wait for ESP32 to complete boot after reset
                 print("Waiting for ESP32 to boot...")
                 time.sleep(3.0)
@@ -166,7 +166,7 @@ class VolumeMonitor:
                         if icon_data:
                             print(f"Sending icon for {app_name}")
                             self.serial_manager.send_icon(app_name, icon_data)
-                            time.sleep(0.75)  # Safe delay between icons
+                            time.sleep(0.25)  # 0.25s delay with 16KB buffer should be perfect
             
             return success
         except Exception as e:
@@ -208,7 +208,7 @@ class VolumeMonitor:
                             if icon_data:
                                 print(f"Sending icon for {app_name}")
                                 self.serial_manager.send_icon(app_name, icon_data)
-                                time.sleep(0.75)  # Safe delay between icons
+                                time.sleep(0.25)
                 
                 return success
             

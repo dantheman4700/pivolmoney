@@ -494,7 +494,8 @@ void createUI() {
 }
 
 void setup() {
-    Serial.begin(115200);
+    Serial.setRxBufferSize(16384); // 16KB Buffer = holds ~6 icons pending processing
+    Serial.begin(921600);
     delay(500);
     
     Serial.println("\n=== VOLUME PANEL BOOT ===");
