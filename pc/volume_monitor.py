@@ -137,26 +137,44 @@ class VolumeMonitor:
     def send_initial_config(self):
         """Send initial configuration to Pico"""
         try:
-            # TEMPORARY: Send only Master volume for testing
-            master_vol = self.get_master_volume()
-            lean_apps = {
-                "Master": {
-                    "v": master_vol,
-                    "m": False,
-                    "i": False
-                }
-            }
+            # Get actual apps with volumes and icons
+            app_volumes, icons = self.get_application_volumes()
             
-            print(f"DEBUG: Sending test config with Master only (vol={master_vol})")
-            return self.serial_manager.send_message(MSG_INITIAL_CONFIG, {
+            # Convert to lean format
+            lean_apps = {}
+            for app in app_volumes:
+                lean_apps[app["name"]] = {
+                    "v": app["volume"],
+                    "m": app["muted"],
+                    "i": app["has_icon"]
+                }
+            
+            print(f"Sending initial config with {len(lean_apps)} apps")
+            success = self.serial_manager.send_message(MSG_INITIAL_CONFIG, {
                 "apps": lean_apps
             })
+            
+            if success:
+                # Save as last state to prevent immediate re-send
+                self.last_app_list = lean_apps.copy()
+                
+                # Send icons
+                if icons:
+                    for icon_info in icons:
+                        app_name = icon_info["name"]
+                        icon_data = icon_info["icon"]
+                        if icon_data:
+                            print(f"Sending icon for {app_name}")
+                            self.serial_manager.send_icon(app_name, icon_data)
+                            time.sleep(0.05)  # Small delay between icons
+            
+            return success
         except Exception as e:
             print(f"Error sending initial config: {e}")
             return False
 
-    def send_app_update(self, app_volumes):
-        """Send app update using lean protocol"""
+    def send_app_update(self, app_volumes, icons_to_send=None):
+        """Send app update using lean protocol and send icons"""
         try:
             # Debounce updates
             current_time = time.time()
@@ -180,7 +198,17 @@ class VolumeMonitor:
                 
                 if success:
                     self.last_state_update = current_time
-                    self.last_app_list = lean_apps.copy()  # Use copy to avoid reference issues
+                    self.last_app_list = lean_apps.copy()
+                    
+                    # Send icons for apps that have them
+                    if icons_to_send:
+                        for icon_info in icons_to_send:
+                            app_name = icon_info["name"]
+                            icon_data = icon_info["icon"]
+                            if icon_data:
+                                print(f"Sending icon for {app_name}")
+                                self.serial_manager.send_icon(app_name, icon_data)
+                                time.sleep(0.1)  # Small delay between icons
                 
                 return success
             
@@ -298,8 +326,8 @@ class VolumeMonitor:
             if current_time - self.last_update >= self.update_interval:
                 app_volumes, icons = self.get_application_volumes()
                 
-                # Send update if needed
-                if self.send_app_update(app_volumes):
+                # Send update with icons if needed
+                if self.send_app_update(app_volumes, icons):
                     self.last_update = current_time
                 
             time.sleep(0.01)

@@ -19,7 +19,7 @@ def rgb_to_rgb565(r, g, b):
 class IconHandler:
     def __init__(self):
         self.icon_cache = {}  # Cache for storing icons
-        self.icon_size = (48, 48)  # Changed to 48x48 square icons
+        self.icon_size = (32, 32)  # 32x32 icons to match firmware
         
     def clear_cache(self):
         """Clear the icon cache"""
@@ -53,7 +53,8 @@ class IconHandler:
 
     def get_icon_for_app(self, process_name, pid):
         """Get icon for an app, using cache if available"""
-        cache_key = f"{process_name}_{pid}"
+        # Cache by process name only (ignore PID as it changes)
+        cache_key = process_name
         
         # Check cache first
         if cache_key in self.icon_cache:

@@ -127,23 +127,34 @@ class SerialManager:
 
     def send_icon(self, app_name, icon_data):
         """
-        Send an icon using base64 encoding in a single message.
-        icon_data should be bytes in RGB565 format.
+        Send an icon using base64 encoding in the simple text protocol.
+        icon_data should be bytes in RGB565 format (32x32 = 2048 bytes).
+        Format: ICN|AppName:Base64Data
         """
         try:
             if not icon_data:
                 self.logger.error("Icon data is None or empty")
+                return False
+            
+            if not self.serial or not self.serial.is_open:
+                self.logger.error("Cannot send icon - serial port not open")
                 return False
                 
             self.logger.debug(f"Sending icon for {app_name}, raw size: {len(icon_data)} bytes")
             b64_data = binascii.b2a_base64(icon_data).decode().strip()
             self.logger.debug(f"Base64 encoded size: {len(b64_data)} bytes")
             
-            payload = {
-                "n": app_name,
-                "d": b64_data
-            }
-            return self.send_message("itr", payload)
+            # Sanitize app name (same as in send_message)
+            sanitized_name = app_name.replace(",", "").replace("|", "").replace(":", "")
+            if len(sanitized_name) > 15:
+                sanitized_name = sanitized_name[:15]
+            
+            # Format: ICN|AppName:Base64Data
+            msg_str = f"ICN|{sanitized_name}:{b64_data}"
+            self._tap("TX", f"ICN|{sanitized_name}:[{len(b64_data)} bytes]")  # Don't log full base64
+            self.serial.write((msg_str + "\n").encode())
+            self.serial.flush()
+            return True
         except Exception as e:
             self.logger.error(f"Error sending icon: {str(e)}")
             return False
