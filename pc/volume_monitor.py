@@ -1,19 +1,40 @@
-from icon_handler import IconHandler
-import serial
-import json
-import time
-from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
-import serial.tools.list_ports
-import sys
+import argparse
 import base64
+import json
+import sys
+import time
+
+import serial
+import serial.tools.list_ports
+from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+
+from icon_handler import IconHandler
 from serial_manager import (
     SerialManager, MSG_HEARTBEAT, MSG_CONNECT, MSG_ICON_REQ,
     MSG_ICON_TRANSFER, MSG_UPDATE, MSG_ERROR, MSG_ACK,
     MSG_INITIAL_CONFIG, MSG_VOLUME_CMD
 )
+from serial_tap import SerialTapServer
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="PC host for the volume panel Pico")
+    parser.add_argument(
+        "--serial-tap-port",
+        type=int,
+        default=None,
+        help="Expose the raw serial stream on this TCP port for debugging.",
+    )
+    parser.add_argument(
+        "--serial-tap-host",
+        default="127.0.0.1",
+        help="Interface for the tap server (default: 127.0.0.1).",
+    )
+    return parser.parse_args()
+
 
 class VolumeMonitor:
-    def __init__(self):
+    def __init__(self, serial_tap=None):
         self.serial_manager = None
         self.connected = False
         self.initialized = False
@@ -25,35 +46,45 @@ class VolumeMonitor:
         self.heartbeat_interval = 1.0  # Send heartbeat every second
         self.update_debounce = 0.1  # 100ms debounce for updates
         self.last_state_update = 0
+        self.serial_tap = serial_tap
         print("VolumeMonitor initialized")
         
     def find_pico_com_port(self):
-        """Find the COM port for the Pico device"""
+        """Find the COM port for the ESP32-S3 device"""
         # Don't search if already connected
         if self.connected and self.initialized and self.serial_manager:
             return True
             
         ports = list(serial.tools.list_ports.comports())
-        pico_ports = []
+        esp32_ports = []
         
         for port in ports:
-            if "VID:PID=2E8A:0005" in port.hwid:
-                pico_ports.append(port.device)
+            # Check for Silicon Labs CP210x (ESP32-S3)
+            # Also check for CH340 as backup (common ESP32 UART chip)
+            if "VID:PID=10C4:EA60" in port.hwid or "CP210" in port.description or "Silicon Labs" in port.manufacturer:
+                esp32_ports.append(port.device)
+                print(f"Found ESP32-S3 candidate: {port.device} - {port.description}")
         
-        if pico_ports:
-            pico_ports.sort(reverse=True)
+        if esp32_ports:
+            esp32_ports.sort(reverse=True)
             
-            for port in pico_ports:
+            for port in esp32_ports:
                 print(f"Attempting connection on {port}")
-                self.serial_manager = SerialManager(port)
+                self.serial_manager = SerialManager(port, tap=self.serial_tap)
+                # Wait for ESP32 to complete boot after reset
+                print("Waiting for ESP32 to boot...")
+                time.sleep(3.0)
+                # Flush any boot messages
+                if self.serial_manager.serial:
+                    self.serial_manager.serial.reset_input_buffer()
                 if self.try_connect():
-                    print(f"Successfully connected on {port}")
+                    print(f"Successfully connected to ESP32-S3 on {port}")
                     return True
             
-            print("Failed to connect to Pico")
+            print("Failed to connect to ESP32-S3")
             return False
         
-        print("No Pico device found")
+        print("No ESP32-S3 device found")
         return False
         
     def try_connect(self):
@@ -69,18 +100,17 @@ class VolumeMonitor:
                 start_time = time.time()
                 while time.time() - start_time < 5:  # 5 second timeout
                     msg_type, payload = self.serial_manager.read_message()
-                    if msg_type == MSG_ACK:
+                    if msg_type == "ack":
                         self.connected = True
                         self.last_heartbeat = time.time()
                         print("Received connection acknowledgment")
                         
-                    elif msg_type == MSG_INITIAL_CONFIG and self.connected:
-                        print("Received initial config request")
-                        # Send initial configuration
+                        # Send initial configuration immediately
                         if self.send_initial_config():
                             self.initialized = True
                             print("Initial configuration sent successfully")
                             return True
+                    
                     time.sleep(0.1)
             
             if not self.initialized:
@@ -107,17 +137,17 @@ class VolumeMonitor:
     def send_initial_config(self):
         """Send initial configuration to Pico"""
         try:
-            app_volumes, _ = self.get_application_volumes()
-            
-            # Convert to lean format
-            lean_apps = {}
-            for app in app_volumes:
-                lean_apps[app["name"]] = {
-                    "v": app["volume"],  # Short key for volume
-                    "m": app["muted"],   # Short key for muted
-                    "i": app["has_icon"] # Short key for has_icon
+            # TEMPORARY: Send only Master volume for testing
+            master_vol = self.get_master_volume()
+            lean_apps = {
+                "Master": {
+                    "v": master_vol,
+                    "m": False,
+                    "i": False
                 }
+            }
             
+            print(f"DEBUG: Sending test config with Master only (vol={master_vol})")
             return self.serial_manager.send_message(MSG_INITIAL_CONFIG, {
                 "apps": lean_apps
             })
@@ -187,47 +217,53 @@ class VolumeMonitor:
             elif msg_type == "vol":  # Volume command from Pico
                 app_name = payload.get("app")
                 direction = payload.get("d")  # 1 for up, 0 for down
-                print(f"Received volume {direction and 'up' or 'down'} command for {app_name}")  # Debug print
+                abs_volume = payload.get("v") # Absolute volume 0-100
                 
-                if app_name and direction is not None:
+                print(f"Received volume command for {app_name}: d={direction}, v={abs_volume}")  # Debug print
+                
+                if app_name:
                     success = False
-                    current_volume = None
                     
-                    if app_name == "Master":
-                        current_volume = self.get_master_volume()
-                    else:
-                        # Use the same method as get_application_volumes
-                        sessions = AudioUtilities.GetAllSessions()
-                        seen_apps = set()  # Track seen apps to handle duplicates
-                        for session in sessions:
-                            if session.Process and session.Process.name() == app_name:
-                                volume_interface = session.SimpleAudioVolume
-                                current_volume = int(volume_interface.GetMasterVolume() * 100)
-                                break
-                    
-                    # Only proceed if we got a valid volume
-                    if current_volume is not None:
-                        # Adjust volume by 2% up or down
-                        new_volume = max(0, min(100, current_volume + (2 if direction else -2)))
-                        print(f"Adjusting {app_name} volume from {current_volume} to {new_volume}")  # Debug print
-                        
+                    if abs_volume is not None:
+                        # Absolute volume setting
+                        print(f"Setting {app_name} volume to {abs_volume}")
                         if app_name == "Master":
-                            success = self.set_master_volume(new_volume)
+                            success = self.set_master_volume(abs_volume)
                         else:
-                            success = self.set_app_volume(app_name, new_volume)
+                            success = self.set_app_volume(app_name, abs_volume)
+                        new_volume = abs_volume
                         
-                        if success:
-                            print(f"Successfully adjusted volume for {app_name}")  # Debug print
-                            # Send volume command acknowledgment with new volume
-                            self.serial_manager.send_volume_ack(app_name, new_volume)
-                            
-                            # Get current app volumes and send update
-                            app_volumes, _ = self.get_application_volumes()
-                            self.send_app_update(app_volumes)
+                    elif direction is not None:
+                        # Relative volume setting
+                        current_volume = None
+                        if app_name == "Master":
+                            current_volume = self.get_master_volume()
                         else:
-                            print(f"Failed to adjust volume for {app_name}")  # Debug print
+                            sessions = AudioUtilities.GetAllSessions()
+                            for session in sessions:
+                                if session.Process and session.Process.name() == app_name:
+                                    volume_interface = session.SimpleAudioVolume
+                                    current_volume = int(volume_interface.GetMasterVolume() * 100)
+                                    break
+                        
+                        if current_volume is not None:
+                            new_volume = max(0, min(100, current_volume + (2 if direction else -2)))
+                            print(f"Adjusting {app_name} volume from {current_volume} to {new_volume}")
+                            
+                            if app_name == "Master":
+                                success = self.set_master_volume(new_volume)
+                            else:
+                                success = self.set_app_volume(app_name, new_volume)
+                    
+                    if success:
+                        print(f"Successfully adjusted volume for {app_name}")
+                        self.serial_manager.send_volume_ack(app_name, new_volume)
+                        
+                        # Get current app volumes and send update
+                        app_volumes, _ = self.get_application_volumes()
+                        self.send_app_update(app_volumes)
                     else:
-                        print(f"Could not get current volume for {app_name}")  # Debug print
+                        print(f"Failed to adjust volume for {app_name}")
 
         except Exception as e:
             print(f"Error handling message: {e}")
@@ -270,6 +306,7 @@ class VolumeMonitor:
             
         except Exception as e:
             print(f"Update error: {e}")
+            time.sleep(1) # Prevent rapid looping on error
             self.disconnect()
 
     def get_application_volumes(self):
@@ -410,7 +447,23 @@ class VolumeMonitor:
         self.send_app_update("Master")
 
 def main():
-    monitor = VolumeMonitor()
+    args = parse_args()
+    serial_tap = None
+
+    if args.serial_tap_port:
+        try:
+            serial_tap = SerialTapServer(
+                host=args.serial_tap_host,
+                port=args.serial_tap_port,
+            )
+            print(
+                f"Serial tap listening on {args.serial_tap_host}:{args.serial_tap_port} "
+                "(connect via telnet/netcat to mirror traffic)"
+            )
+        except OSError as exc:
+            print(f"Failed to start serial tap server: {exc}")
+
+    monitor = VolumeMonitor(serial_tap=serial_tap)
     print("Volume Monitor starting...")
     
     try:
@@ -426,6 +479,8 @@ def main():
                 time.sleep(1)
     finally:
         monitor.disconnect()
+        if serial_tap:
+            serial_tap.close()
         print("Volume Monitor stopped")
 
 if __name__ == "__main__":

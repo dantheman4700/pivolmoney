@@ -21,7 +21,7 @@
 
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc` and `lv_mem_free`*/
 #define LV_MEM_CUSTOM 0
-#define LV_MEM_SIZE (128 * 1024U)          /*[bytes]*/
+#define LV_MEM_SIZE (48 * 1024U)          /*[bytes]*/
 
 /*=========================
    HAL SETTINGS
@@ -49,15 +49,18 @@
  *-----------*/
 
 /*Enable the log module*/
-#define LV_USE_LOG 1
-#define LV_LOG_LEVEL LV_LOG_LEVEL_INFO
+#define LV_USE_LOG 0
+// #define LV_LOG_LEVEL LV_LOG_LEVEL_INFO
 
 /*-------------
  * Others
  *-----------*/
 
 /*1: Enable the runtime performance monitor*/
-#define LV_USE_PERF_MONITOR 1
-#define LV_USE_MEM_MONITOR 1
+#define LV_USE_PERF_MONITOR 0
+#define LV_USE_MEM_MONITOR 0
+
+/*Font*/
+#define LV_FONT_MONTSERRAT_14 1
 
 #endif /*LV_CONF_H*/
